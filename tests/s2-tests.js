@@ -1,0 +1,14 @@
+const ok=T.ok, mode=process.env.MODE;
+T.head('fallback chain: '+mode+' (chose '+DraftStore.kind()+')');
+if(mode==='session')ok('-> sessionStorage', DraftStore.kind()==='sessionStorage');
+if(mode==='windowname')ok('-> window.name', DraftStore.kind()==='window.name');
+if(mode==='memory')ok('-> memory', DraftStore.kind()==='memory');
+ok('durable false', DraftStore.durable()===false);
+DraftStore.set(draftKey(),{savedAt:Date.now(),rows:[{Type:'BO'}]});
+ok('set/get works', DraftStore.get(draftKey())?.rows?.[0]?.Type==='BO');
+DraftStore.set('ocrdraft:v1:stale',{savedAt:Date.now()-99*3600*1000,rows:[]});
+DraftStore.sweep(24*3600*1000);
+ok('sweep works', DraftStore.get('ocrdraft:v1:stale')===null);
+DraftStore.remove(draftKey());
+ok('remove works', DraftStore.get(draftKey())===null);
+T.done();

@@ -438,6 +438,130 @@
             /* color:#eaeaea !important; */
         }
 
+        /* Rows already written to Glide by a partially-completed submit.
+           Read-only because the backend has no update mutation. Deliberately
+           understated: when only the placeholder drawing is outstanding every
+           row carries this, and heavy dimming would read as "something is
+           broken" when in fact all the data is safely saved. */
+        .handsontable td.row-locked {
+            color: #8f8f8f !important;
+            cursor: not-allowed;
+        }
+
+        .handsontable td.row-locked:first-child {
+            box-shadow: inset 3px 0 0 #2f6b3a;
+        }
+
+        /* Draft restore / unfinished-submission prompt.
+           Mirrors #instr-modal-* so it reads as part of the same system. */
+        #draft-modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: none;
+            z-index: 2100;
+        }
+
+        #draft-modal-backdrop.open {
+            display: block;
+        }
+
+        #draft-modal-card {
+            position: fixed;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            background: #1a1a1a;
+            border: 1px solid #444;
+            border-radius: 8px;
+            width: min(90vw, 460px);
+            padding: 20px 22px;
+            box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+            color: #eaeaea;
+        }
+
+        /* The dialog receives focus on open so focus moves into the modal;
+           it is not an interactive control, so it shows no ring. */
+        #draft-modal-card:focus {
+            outline: none;
+        }
+
+        #draft-modal-card h3 {
+            margin: 0 0 10px 0;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        #draft-modal-body {
+            font-size: 13px;
+            line-height: 1.55;
+            color: #b9b9b9;
+        }
+
+        #draft-modal-body .draft-stage-done { color: #4ade80; }
+        #draft-modal-body .draft-stage-todo { color: #f0b429; }
+
+        #draft-modal-actions {
+            margin-top: 18px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        #draft-modal-actions button {
+            padding: 7px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 5px;
+            cursor: pointer;
+            border: 1px solid #555;
+            background: transparent;
+            color: #ddd;
+        }
+
+        /* Matches #submit-btn so the primary action looks the same everywhere */
+        #draft-modal-actions button.primary {
+            background: #D99E01;
+            border-color: #D99E01;
+            color: #fff;
+            font-weight: 700;
+        }
+
+        #draft-modal-actions button:hover { opacity: 0.88; }
+
+        /* Suppress the UA ring on click, keep a themed one for keyboard users
+           (:focus-visible only matches keyboard navigation). */
+        #draft-modal-actions button:focus { outline: none; }
+
+        #draft-modal-actions button:focus-visible {
+            outline: 2px solid #f0c14b;
+            outline-offset: 2px;
+        }
+
+        /* Storage caveat. Plain text under the Submit button, right aligned —
+           read once or twice and then ignored, so it earns no chrome. Only
+           rendered when persistence is unreliable (see AUTOSAVE_BADGE_WHEN),
+           and it is a normal block in the flow rather than an overlay, so it
+           can never sit on top of the column-header upload zones. */
+        #autosave-note {
+            text-align: right;
+            font-size: 11px;
+            line-height: 1.3;
+            color: #7d7d7d;
+            padding: 0 2px 3px 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        /* #handsontable-container has a hard-coded viewport height, so it does
+           not shrink on its own when the header grows — without this the note's
+           height would be clipped off the bottom of the table. Applied only
+           when the note exists, so nobody else loses any space. */
+        .has-autosave-note #handsontable-container {
+            height: calc(100vh - 97px);
+        }
+
         .handsontable td.type-missing-childpart {
             color:#fc5f67 !important;
             font-weight: 600 !important;
@@ -1387,6 +1511,419 @@ let isAppendMode = false; // Track append mode state
 let lastOcrBomItem = 0;
 let rowID = null;
 
+// ═══════════════════════════════════════════════════════════════════════
+// Draft persistence + resumable submit state
+// ═══════════════════════════════════════════════════════════════════════
+const DRAFT_PREFIX = 'ocrdraft:v1:';
+const DRAFT_TTL_MS = 24 * 60 * 60 * 1000;   // 24h
+const DRAFT_SAVE_DEBOUNCE_MS = 500;
+const OCR_COLS = ["Quantity", "Description", "Material"];
+
+let _lockedRows  = new Set();  // physical row indices already written to Glide
+let _submitState = null;       // see buildSubmitState()
+let _draftReady  = false;      // guards saves during boot / restore
+let _saveTimer   = null;
+let _restoredThisLoad = false; // suppresses the default-instructions banner
+
+/**
+ * Storage adapter. Every read/write goes through here so a remote backend can
+ * be dropped in later without touching a single call site.
+ * Chrome/Edge/Firefox partition third-party iframe storage (works fine).
+ * Safari may make it ephemeral or block it — we degrade instead of throwing.
+ */
+const DraftStore = (function () {
+    let raw = null;
+    let kind = 'none';
+
+    function memoryStore() {
+        const m = new Map();
+        return {
+            getItem: k => (m.has(k) ? m.get(k) : null),
+            setItem: (k, v) => m.set(k, String(v)),
+            removeItem: k => m.delete(k),
+            keys: () => Array.from(m.keys())
+        };
+    }
+
+    // window.name survives a reload of the same browsing context and is not
+    // subject to third-party storage policy. Lost when the frame is destroyed.
+    function windowNameStore() {
+        const MARK = '__ocrdraft__';
+        const read = () => {
+            try {
+                const parsed = JSON.parse(window.name || '{}');
+                return (parsed && parsed[MARK]) ? parsed : { [MARK]: true };
+            } catch (e) { return { [MARK]: true }; }
+        };
+        const write = obj => { window.name = JSON.stringify(obj); };
+        return {
+            getItem: k => { const o = read(); return (k in o) ? o[k] : null; },
+            setItem: (k, v) => { const o = read(); o[k] = String(v); write(o); },
+            removeItem: k => { const o = read(); delete o[k]; write(o); },
+            keys: () => Object.keys(read()).filter(k => k !== MARK)
+        };
+    }
+
+    function wrapWebStorage(s) {
+        return {
+            getItem: k => s.getItem(k),
+            setItem: (k, v) => s.setItem(k, v),
+            removeItem: k => s.removeItem(k),
+            keys: () => { const out = []; for (let i = 0; i < s.length; i++) out.push(s.key(i)); return out; }
+        };
+    }
+
+    // Every candidate must survive a real write/read/remove round-trip before we
+    // accept it. Constructing one proves nothing: window.name in particular only
+    // throws on first use, which would otherwise swallow saves silently.
+    (function probe() {
+        const candidates = [
+            ['localStorage',   () => wrapWebStorage(window.localStorage)],
+            ['sessionStorage', () => wrapWebStorage(window.sessionStorage)],
+            ['window.name',    () => windowNameStore()],
+            ['memory',         () => memoryStore()],
+        ];
+        for (const [name, make] of candidates) {
+            try {
+                const cand = make();
+                const pk = '__ocrprobe__';
+                cand.setItem(pk, '1');
+                const ok = cand.getItem(pk) === '1';
+                cand.removeItem(pk);
+                if (ok) { raw = cand; kind = name; return; }
+            } catch (e) { /* blocked — try the next one */ }
+        }
+        raw = memoryStore(); kind = 'memory';
+    })();
+
+    return {
+        kind: () => kind,
+        durable: () => kind === 'localStorage',
+        get(key) {
+            try { const s = raw.getItem(key); return s ? JSON.parse(s) : null; }
+            catch (e) { console.warn('[draft] read failed', e); return null; }
+        },
+        set(key, value) {
+            const json = JSON.stringify(value);
+            try { raw.setItem(key, json); return true; }
+            catch (e) {
+                // Quota exceeded: purge oldest drafts and retry.
+                try {
+                    const others = raw.keys()
+                        .filter(k => k.startsWith(DRAFT_PREFIX) && k !== key)
+                        .map(k => {
+                            let t = 0;
+                            try { t = (JSON.parse(raw.getItem(k)) || {}).savedAt || 0; } catch (_) { }
+                            return { k, t };
+                        })
+                        .sort((a, b) => a.t - b.t);
+                    for (const { k } of others) {
+                        raw.removeItem(k);
+                        try { raw.setItem(key, json); return true; } catch (_) { /* keep purging */ }
+                    }
+                } catch (e2) { /* fall through */ }
+                console.warn('[draft] write failed', e);
+                return false;
+            }
+        },
+        remove(key) { try { raw.removeItem(key); } catch (e) { } },
+        sweep(ttlMs) {
+            try {
+                const now = Date.now();
+                raw.keys().filter(k => k.startsWith(DRAFT_PREFIX)).forEach(k => {
+                    let savedAt = 0;
+                    try { savedAt = (JSON.parse(raw.getItem(k)) || {}).savedAt || 0; } catch (_) { }
+                    if (!savedAt || now - savedAt > ttlMs) raw.removeItem(k);
+                });
+            } catch (e) { /* nothing to sweep */ }
+        }
+    };
+})();
+
+// `item` is deliberately NOT part of the key: it changes after every submit
+// and would orphan the draft the user is still working on.
+function draftKey() {
+    const p = new URLSearchParams(window.location.search);
+    return DRAFT_PREFIX + [
+        p.get('project') || '', p.get('part') || '',
+        p.get('parentdrgnum') || '', p.get('rowID') || ''
+    ].join('|');
+}
+
+function currentItemParam() {
+    const p = new URLSearchParams(window.location.search);
+    return parseInt(p.get('item') || '0', 10) || 0;
+}
+
+function blankRow() {
+    return {
+        "PartNumber": { text: "", confidence: 0 },
+        "Type": "",
+        "Matched Childpart": "",
+        Quantity: { text: "", confidence: 0 },
+        Description: { text: "", confidence: 0 },
+        Material: { text: "", confidence: 0 },
+    };
+}
+
+function isRowBlank(row) {
+    if (!row) return true;
+    if ((row.Type || '').trim()) return false;
+    if ((row["Matched Childpart"] || '').toString().trim()) return false;
+    if ((row.PartNumber?.text || '').trim()) return false;
+    return !OCR_COLS.some(c => (row[c]?.text || '').trim());
+}
+
+// minSpareRows keeps appending an empty row to the data source; without this
+// trim the table would grow by one row on every save→restore cycle.
+function rowsForSave() {
+    const rows = spreadsheetData.slice();
+    while (rows.length && isRowBlank(rows[rows.length - 1])) rows.pop();
+    return rows;
+}
+
+// Rebuild each restored row onto a known-good shape rather than trusting
+// whatever came out of storage (drafts may predate a schema tweak).
+function normalizeRow(rawRow) {
+    const base = blankRow();
+    if (!rawRow || typeof rawRow !== 'object') return base;
+    base.Type = typeof rawRow.Type === 'string' ? rawRow.Type : '';
+    base["Matched Childpart"] = rawRow["Matched Childpart"] != null ? rawRow["Matched Childpart"] : '';
+    ["PartNumber", ...OCR_COLS].forEach(c => {
+        const v = rawRow[c];
+        if (v && typeof v === 'object') {
+            base[c] = {
+                text: typeof v.text === 'string' ? v.text : '',
+                confidence: Number(v.confidence) || 0
+            };
+            if (v.ocr) base[c].ocr = true;
+        }
+    });
+    // Keep the `delete`-style semantics: absent, never null.
+    if (rawRow._needsReview) base._needsReview = true;
+    if (rawRow._missingDrawing) base._missingDrawing = true;
+    if (typeof rawRow._similarityScore === 'number') base._similarityScore = rawRow._similarityScore;
+    // Identity of a row that has already been written to Glide. Must survive a
+    // restore, or the row would be re-sent.
+    if (rawRow._sentKey) base._sentKey = rawRow._sentKey;
+    return base;
+}
+
+// Recomputed on every paint, so they are not user content and must not count
+// as a change. The renderer writes _similarityScore during render, which made
+// every load-then-leave look like an edit and restamped savedAt — so an active
+// draft never aged and the 24h expiry never fired.
+const DERIVED_ROW_FIELDS = ['_similarityScore', '_needsReview'];
+
+// Fingerprint of the content only — never the timestamp. Both sides are put
+// through normalizeRow first so a stored draft and the live table canonicalise
+// identically; comparing raw storage against normalised rows reported a
+// difference that was not there.
+function draftFingerprint(rows, submitState) {
+    const canonical = (rows || []).map(r => {
+        const n = normalizeRow(r);
+        DERIVED_ROW_FIELDS.forEach(k => { delete n[k]; });
+        return n;
+    });
+    return JSON.stringify({ rows: canonical, submitState: submitState || null });
+}
+
+let _lastWrittenFingerprint = null;
+let _acknowledgedFingerprint = null;   // content the user has already decided about
+
+function saveDraftNow() {
+    if (!_draftReady) return;
+    clearTimeout(_saveTimer); _saveTimer = null;
+
+    const rows = rowsForSave();
+    const fingerprint = draftFingerprint(rows, _submitState);
+
+    // An untouched session must leave nothing behind, or the next visit would
+    // be prompted to restore an empty table.
+    if (!rows.length && !_submitState) {
+        if (_lastWrittenFingerprint !== null) DraftStore.remove(draftKey());
+        _lastWrittenFingerprint = null;
+        return;
+    }
+
+    // Nothing actually changed. Skipping the write is what keeps `savedAt`
+    // meaning "last modified" — pagehide/beforeunload/visibilitychange all call
+    // this on every reload, so writing unconditionally reset the age to "now"
+    // each time and the draft could never grow old.
+    if (fingerprint === _lastWrittenFingerprint) return;
+
+    DraftStore.set(draftKey(), {
+        v: 1,
+        savedAt: Date.now(),
+        item: currentItemParam(),
+        rows,
+        submitState: _submitState,
+        acknowledged: _acknowledgedFingerprint
+    });
+    _lastWrittenFingerprint = fingerprint;
+}
+
+function scheduleDraftSave() {
+    if (!_draftReady) return;
+    clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(saveDraftNow, DRAFT_SAVE_DEBOUNCE_MS);
+}
+
+function loadDraft() {
+    const d = DraftStore.get(draftKey());
+    if (!d || !d.savedAt) return null;
+    if (Date.now() - d.savedAt > DRAFT_TTL_MS) { DraftStore.remove(draftKey()); return null; }
+    return d;
+}
+
+function clearDraft() {
+    clearTimeout(_saveTimer); _saveTimer = null;
+    _submitState = null;
+    _lockedRows = new Set();
+    _lastWrittenFingerprint = null;
+    _acknowledgedFingerprint = null;
+    DraftStore.remove(draftKey());
+}
+
+function describeAge(ms) {
+    const mins = Math.round(ms / 60000);
+    if (mins < 1) return 'just now';
+    if (mins === 1) return '1 minute ago';
+    if (mins < 60) return `${mins} minutes ago`;
+    const hrs = Math.round(mins / 60);
+    return hrs === 1 ? '1 hour ago' : `${hrs} hours ago`;
+}
+
+// Rows already written to Glide become read-only — there is no update
+// mutation wired, so an edit here could never reach Glide.
+function sentKeySet() {
+    const keys = new Set();
+    if (!_submitState) return keys;
+    ['childParts', 'boParts'].forEach(k => {
+        (_submitState[k]?.sent || []).forEach(r => { if (r._sentKey) keys.add(r._sentKey); });
+    });
+    return keys;
+}
+
+function recomputeLockedRows() {
+    _lockedRows = new Set();
+    if (!_submitState) return;
+    // Driven by `sent`, not by stage status: a completed stage that has picked
+    // up newly added rows goes back to 'todo', but the rows it already wrote to
+    // Glide must stay locked.
+    //
+    // Located by _sentKey rather than by row position. The key lives on the row
+    // object, so it moves with the row when one is inserted above or deleted;
+    // matching on position meant an insert shifted every index and an
+    // already-saved row was sent to Glide a second time.
+    const sent = sentKeySet();
+    if (!sent.size) return;
+    spreadsheetData.forEach((row, idx) => {
+        if (row && row._sentKey && sent.has(row._sentKey)) _lockedRows.add(idx);
+    });
+}
+
+// Drafts written before `sent` existed keep a completed stage's rows in
+// `payload`. Move them across so locking and rebuilds behave.
+function normalizeSubmitState(st) {
+    if (!st) return st;
+    ['childParts', 'boParts'].forEach(k => {
+        const stage = st[k];
+        if (!stage) return;
+        if (!Array.isArray(stage.sent)) {
+            stage.sent = (stage.status === 'done') ? (stage.payload || []) : [];
+            if (stage.status === 'done') stage.payload = [];
+        }
+        if (!Array.isArray(stage.payload)) stage.payload = [];
+    });
+    return st;
+}
+
+// Stage statuses: 'todo' (built, not attempted) | 'pending' (request sent,
+// outcome unknown) | 'failed' (server rejected it) | 'done' | 'skipped'.
+//
+// ONE definition of "still needs sending", used by the executor, the button
+// label and the unresolved check alike. They previously disagreed: the button
+// treated 'pending' as unresolved while the executor refused to send it, so a
+// stage left pending by a dropped connection was skipped on retry and the
+// submission was then declared complete — silently losing those rows.
+const STAGE_OUTSTANDING = ['todo', 'failed', 'pending'];
+
+function stageNeedsSending(stage) {
+    return !!stage && STAGE_OUTSTANDING.includes(stage.status);
+}
+
+function hasUnresolvedSubmit() {
+    if (!_submitState) return false;
+    return ['childParts', 'pdfs', 'boParts'].some(k => stageNeedsSending(_submitState[k]));
+}
+
+// The notification bar is transient and single-purpose: information only.
+// Anything actionable belongs either on the Submit button or in the draft
+// modal, so it can't be silently replaced by the next message.
+function clearNotificationActions() {
+    document.querySelectorAll('#notification-area .notif-action').forEach(b => b.remove());
+}
+
+// ── Draft modal ────────────────────────────────────────────────────────
+// actions: [{ label, primary?, onClick }]
+function openDraftModal(title, bodyHtml, actions) {
+    const backdrop = document.getElementById('draft-modal-backdrop');
+    if (!backdrop) return;
+    document.getElementById('draft-modal-title').textContent = title;
+    document.getElementById('draft-modal-body').innerHTML = bodyHtml;
+
+    const box = document.getElementById('draft-modal-actions');
+    box.innerHTML = '';
+    actions.forEach(a => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = a.label;
+        if (a.primary) btn.className = 'primary';
+        btn.addEventListener('click', () => { closeDraftModal(); a.onClick(); });
+        box.appendChild(btn);
+    });
+
+    backdrop.classList.add('open');
+    backdrop.setAttribute('aria-hidden', 'false');
+    // Focus the dialog itself, not a button. Focus still moves into the modal
+    // (so keyboard and screen-reader users aren't stranded behind it), but
+    // programmatically focusing the button made Chromium paint its blue focus
+    // ring around it on open. Tabbing still reaches the buttons normally.
+    const card = document.getElementById('draft-modal-card');
+    if (card) card.focus({ preventScroll: true });
+}
+
+function closeDraftModal() {
+    const backdrop = document.getElementById('draft-modal-backdrop');
+    if (!backdrop) return;
+    backdrop.classList.remove('open');
+    backdrop.setAttribute('aria-hidden', 'true');
+}
+
+function escapeHtml(s) {
+    return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// The Submit button is the single action surface. Its label states what a
+// press will actually do, so there is never a second competing button.
+function refreshSubmitButtonState() {
+    const btn = document.getElementById('submit-btn');
+    if (!btn) return;
+    if (!hasUnresolvedSubmit()) { btn.textContent = 'Submit'; return; }
+    // Data already saved and only the placeholder drawing outstanding.
+    btn.textContent = onlyPdfsOutstanding() ? 'Create drawing' : 'Submit Remaining';
+}
+
+function onlyPdfsOutstanding() {
+    if (!_submitState) return false;
+    const unresolved = ['childParts', 'pdfs', 'boParts']
+        .filter(k => stageNeedsSending(_submitState[k]));
+    return unresolved.length === 1 && unresolved[0] === 'pdfs';
+}
+
 // === One-shot notification gate (pre-submit live notifications) ===
 // We gate refreshes that come from renderers/live validation so they don't
 // stomp success/info banners or thrash during frequent re-renders.
@@ -1400,6 +1937,12 @@ function requestNotificationRefreshOnce() {
 }
 function resetNotificationGate() {
   _notifGate.active = false;
+  // A fresh user edit is the signal that the previous error/warning has been
+  // acted on. Releasing the hold here (and only here) is what lets a corrected
+  // issue clear, while an uncorrected one is simply re-detected by the scan.
+  // Note the ordering in afterChange: the gate resets BEFORE any validator
+  // runs, so a new error raised by this same edit becomes sticky again.
+  _notifSticky = false;
 }
 
 // === Helper: track used childparts in rows marked as "Child Part" ===
@@ -1423,6 +1966,38 @@ function isDuplicateChildpartSelection(value, rowIndex) {
     if (!value) return false;
     const used = getUsedChildparts(rowIndex);
     return used.has(value.toString().trim());
+}
+
+// Physical row indices that repeat a drawing already claimed by an earlier row.
+// Derived on demand rather than stored as a flag, so it cannot go stale: fix or
+// delete the offending row and it simply stops being reported.
+//
+// Only rows bound for the Child Parts table count (Child Part, Missing Drawing),
+// matching the submit-time check. Compared after the same normalisation
+// sendDataToBackend applies, so "D.1.0" and "D10" are one drawing.
+//
+// The FIRST occurrence is left clean and later ones are marked, so the row to
+// correct is the obvious one. O(rows) per call, and the tool is designed for
+// well under ten rows.
+function duplicateChildPartRows() {
+    const seen = new Map();
+    const dupes = new Set();
+    spreadsheetData.forEach((row, idx) => {
+        if (!row) return;
+        const type = (row.Type || "").trim();
+        const qty = row.Quantity?.text?.trim();
+        // Same filter the submit-time check uses. Without it a duplicate on a
+        // row with no quantity raised a sticky error that submitting could not
+        // clear, because that row is never sent and so never blocks.
+        if (!qty || !type) return;
+        if (type !== "Child Part" && type !== TYPE_DISPLAY_NAMES["Missing Childpart"]) return;
+        const raw = (row["Matched Childpart"] || "").toString().trim();
+        if (!raw) return;
+        const key = raw.replaceAll(".", "");
+        if (seen.has(key)) dupes.add(idx);
+        else seen.set(key, idx);
+    });
+    return dupes;
 }
         // Fetch query-params (project, part, parentdrgnum) on load and fetch childParts
         window.addEventListener("DOMContentLoaded", async () => {
@@ -1493,8 +2068,9 @@ function isDuplicateChildpartSelection(value, rowIndex) {
             // Always initialize Handsontable
             console.log("🎨 Initializing Handsontable...");
             initializeHandsontable();
-// Ensure default instructions are visible on startup
-showDefaultInstructions();
+// Ensure default instructions are visible on startup — unless a draft was
+// restored, whose banner would otherwise be immediately clobbered.
+if (!_restoredThisLoad) showDefaultInstructions();
         });
 
         // Sequential character matching + best‐match utility
@@ -1826,7 +2402,148 @@ showDefaultInstructions();
                 "Material",
             ];
 
+            // --- Draft restore -------------------------------------------------
+            // Must happen BEFORE renderSpreadsheet(), which destroys and rebuilds
+            // the Handsontable instance around whatever spreadsheetData holds.
+            DraftStore.sweep(DRAFT_TTL_MS);
+            let restored = null;
+            try {
+                const draft = loadDraft();
+                if (draft && Array.isArray(draft.rows) && draft.rows.length) {
+                    spreadsheetData = draft.rows.map(normalizeRow);
+                    while (spreadsheetData.length < 5) spreadsheetData.push(blankRow());
+                    _submitState = normalizeSubmitState(draft.submitState || null);
+                    recomputeLockedRows();
+                    restored = draft;
+                    // Seed both fingerprints from what we just loaded, so simply
+                    // opening the page is never mistaken for a change.
+                    _lastWrittenFingerprint = draftFingerprint(draft.rows, draft.submitState);
+                    _acknowledgedFingerprint = draft.acknowledged || null;
+                    // Hold the gate closed so renderer-driven warning refreshes
+                    // don't stomp the restore banner before it's even shown.
+                    // The first user edit calls resetNotificationGate() as usual.
+                    _notifGate.active = true;
+                }
+            } catch (e) {
+                console.error('[draft] restore failed, starting clean', e);
+                _submitState = null;
+                _lockedRows = new Set();
+            }
+
             renderSpreadsheet();
+
+            // Only start autosaving once the table is in its final boot state.
+            _draftReady = true;
+
+            _restoredThisLoad = !!restored;
+            refreshSubmitButtonState();
+            if (restored) {
+                replayEditedCellMeta();
+                announceRestore(restored);
+            }
+            // Gate on the same constant the function uses. Guarding on
+            // durable() alone meant Safari never reached it: localStorage is
+            // writable there, so the probe passes, and the pill never showed on
+            // the one browser that actually needs it.
+            if (AUTOSAVE_BADGE_WHEN) markAutosaveUnavailable();
+        }
+
+        // Nothing visual depends on this — an edited cell carries confidence 0,
+        // which renders as the same #0a0a0a the default td background already
+        // uses. Replayed so the meta stays truthful for future renderer changes.
+        function replayEditedCellMeta() {
+            if (!hot) return;
+            spreadsheetData.forEach((row, r) => {
+                OCR_COLS.forEach(colKey => {
+                    const cell = row?.[colKey];
+                    if (!cell || !cell.ocr) return;
+                    if ((cell.confidence || 0) !== 0) return;
+                    if (!(cell.text || '').trim()) return;
+                    const colIndex = hot.propToCol(colKey + '.text');
+                    if (colIndex == null || colIndex < 0) return;
+                    const existing = hot.getCellMeta(r, colIndex).className || '';
+                    const classes = new Set(existing.split(/\s+/).filter(Boolean));
+                    classes.add('edited-cell');
+                    classes.add('user-edited-ocr');
+                    hot.setCellMeta(r, colIndex, 'className', Array.from(classes).join(' '));
+                });
+            });
+            hot.render();
+        }
+
+        // Ask once per version of the draft. Once the user has chosen Restore for
+        // a given set of rows, reloading does not ask again — the embed reloads
+        // itself often (Safari especially), and re-asking each time is noise. If
+        // the content has changed since that choice there is a new decision to
+        // make, so the prompt returns.
+        function announceRestore(draft) {
+            const age = describeAge(Date.now() - draft.savedAt);
+            const rows = (draft.rows || []).length;
+            if (hasUnresolvedSubmit()) { announceUnresolvedSubmit(); return; }
+
+            const current = draftFingerprint(draft.rows, draft.submitState);
+            if (draft.acknowledged && draft.acknowledged === current) {
+                _acknowledgedFingerprint = current;
+                showNotification(`Restored ${rows} row${rows === 1 ? '' : 's'} from ${age}.`, 'success');
+                return;
+            }
+
+            openDraftModal(
+                'Unsaved work found',
+                `You have <strong>${rows} row${rows === 1 ? '' : 's'}</strong> of unsaved work from ${escapeHtml(age)}.<br><br>` +
+                `Restore it, or start with an empty table?`,
+                [
+                    { label: 'Start fresh', onClick: () => {
+                        clearDraft();
+                        _draftReady = false;
+                        initializeHandsontable();
+                        showDefaultInstructions();
+                    } },
+                    { label: 'Restore', primary: true, onClick: () => {
+                        // Already loaded into the table underneath the modal.
+                        // Record the decision against this exact content.
+                        _acknowledgedFingerprint = current;
+                        _lastWrittenFingerprint = null;   // force one write to persist it
+                        saveDraftNow();
+                        showNotification(`Restored ${rows} row${rows === 1 ? '' : 's'} from ${age}.`, 'success');
+                    } }
+                ]
+            );
+        }
+
+        // Safari writes to localStorage happily inside a cross-origin iframe, so
+        // the write probe passes — but the data is ephemeral and cleared when the
+        // browser closes. Confirmed empirically: reload, in-app navigation and
+        // hard refresh all survived; closing the browser did not.
+        //
+        // There is no API that reports "will this storage survive the session",
+        // so this is a user-agent heuristic and will not be right for everyone
+        // (e.g. Safari with cross-site tracking prevention disabled). Chromium
+        // browsers exclude themselves via the CriOS/Chrome tokens.
+        const IS_WEBKIT_SAFARI = /^((?!chrome|chromium|android|crios|fxios|edg).)*safari/i.test(navigator.userAgent);
+        const AUTOSAVE_BADGE_WHEN = !DraftStore.durable() || IS_WEBKIT_SAFARI;
+
+        function markAutosaveUnavailable() {
+            if (!DraftStore.durable()) console.warn(`[draft] non-durable storage: ${DraftStore.kind()}`);
+            if (!AUTOSAVE_BADGE_WHEN) return;
+            if (document.getElementById('autosave-note')) return;
+            const header = document.getElementById('fixed-header-area');
+            if (!header) return;
+            // Sits under the Submit button, right aligned. No tooltip: the line
+            // says what it means, which also keeps the header down to a single
+            // hover target (the info icon).
+            const note = document.createElement('div');
+            note.id = 'autosave-note';
+            // "Session only" implied the work was safe until the browser closed;
+            // in practice Safari can discard an idle tab's storage while it is
+            // still open, so the wording no longer promises that.
+            note.textContent = DraftStore.kind() === 'memory'
+                ? 'Autosave off — work is not being saved.'
+                : 'Autosave not reliable — work may be lost after inactivity.';
+            header.appendChild(note);
+            // Compensates for the header growing; see .has-autosave-note in CSS.
+            const root = document.getElementById('main-container');
+            if (root) root.classList.add('has-autosave-note');
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -1906,8 +2623,15 @@ showDefaultInstructions();
                             : undefined,
 
                     strict: false,
+                    // NOTE: dead line. `allowInvalid` is set again further down in
+                    // this same object literal, and in JS the later key wins — so
+                    // `allowInvalid: true` is what actually applies. Editing this
+                    // one changes nothing. It also would not matter if it did: the
+                    // validator below always calls callback(true) and flags rows
+                    // via _missingDrawing instead, so nothing is ever reported
+                    // invalid for allowInvalid to act on. Left in place on purpose.
                     allowInvalid: false,
-                    
+
                     // ADD THIS VALIDATOR FUNCTION:
                     validator: isMatched ? function(value, callback) {
                       // ✅ row-accurate: use validator context instead of selection
@@ -2016,6 +2740,12 @@ showDefaultInstructions();
                                 if (rowData["_missingDrawing"]) {
                                     td.classList.add("quantity-error-cell"); // Red ! icon
                                     errorNeeded = true;
+                                } else if (duplicateChildPartRows().has(row)) {
+                                    // Same red ! as a missing drawing: this row
+                                    // also blocks submit, and the cause is the
+                                    // part number in this cell.
+                                    td.classList.add("quantity-error-cell");
+                                    errorNeeded = true;
                                 }
                             }
 
@@ -2040,11 +2770,14 @@ showDefaultInstructions();
                                 }
                             }
 
-                            // After both checks, trigger appropriate notification
-                            if ((warningNeeded || errorNeeded) ) {
-                                // hasWarningNotificationShown = true; && !hasWarningNotificationShown
-                                requestNotificationRefreshOnce();
-                            }
+                            // Always ask for a refresh, not only when this pass
+                            // found a problem — otherwise fixing the last issue
+                            // left its message on screen with nothing to clear
+                            // it. The gate still allows just one refresh per
+                            // user edit, so this adds no extra work.
+                            // Skipped on the very first paint, when `hot` is not
+                            // assigned yet (see refreshNotifications).
+                            if (hot) requestNotificationRefreshOnce();
 
                         } else if (isOCRcol) {
                             // OCR columns: color by confidence
@@ -2091,6 +2824,14 @@ showDefaultInstructions();
                                 }
                             }
                         }
+
+                        // Row-level styling, applied after whichever base renderer
+                        // ran above (they reset td.className, so these must come
+                        // last). toggle() rather than add() so the class clears
+                        // when the row stops being BO or stops being locked.
+                        const rowState = spreadsheetData[row];
+                        td.classList.toggle('bo-row', !!rowState && rowState.Type === "BO");
+                        td.classList.toggle('row-locked', _lockedRows.has(row));
                     },
                 };
             });
@@ -2126,10 +2867,18 @@ showDefaultInstructions();
                 // --- Add cells function to apply bo-row class to all cells in BO rows ---
                 cells: function(row, col) {
                   const cellProperties = {};
-                  const rowData = spreadsheetData[row];
-                  if (rowData && rowData.Type === "BO") {
-                    cellProperties.className = 'bo-row';
-                  }
+                  // Assign unconditionally. Handsontable's cell meta persists
+                  // between renders, so a property only set on the "true" branch
+                  // is never cleared when the condition stops holding — that is
+                  // why a row stayed italic after switching BO -> Child Part.
+                  //
+                  // Locked rows are read-only because the backend only ever adds
+                  // rows and cannot update them, so an edit here could not reach
+                  // Glide. The matching *visual* classes are applied in the
+                  // renderer instead of via className here: afterChange manages
+                  // className through setCellMeta (edited-cell, user-edited-ocr),
+                  // and two writers on one property clobber each other.
+                  cellProperties.readOnly = _lockedRows.has(row);
                   return cellProperties;
                 },
 
@@ -2272,6 +3021,30 @@ showDefaultInstructions();
                   });
                 },
             });
+            // --- Draft autosave hooks -------------------------------------------
+            // Registered separately from the big afterChange handler below: that
+            // one has several early returns, so a save tacked onto its end would
+            // be skipped on the cut/copy/paste paths.
+            hot.addHook('afterChange', (changes, source) => {
+                if (!changes || source === 'CopyPaste.copy') return;
+                scheduleDraftSave();
+            });
+            hot.addHook('afterCreateRow', () => {
+                scheduleDraftSave();
+                // Inserting a row moves every row below it; the locks are keyed
+                // to positions, so they have to be re-derived.
+                recomputeLockedRows();
+            });
+            hot.addHook('afterRemoveRow', () => {
+                scheduleDraftSave();
+                // Deleting the offending row resolves the issue, but row removal
+                // does not fire afterChange, so nothing released the notification
+                // hold or re-evaluated the table — the error stayed on screen.
+                resetNotificationGate();
+                refreshNotifications();
+                recomputeLockedRows();
+            });
+
             // --- keep current value when opening Type / Matched Childpart editors
             hot.addHook('afterBeginEditing', function (row, col) {
               const prop = this.colToProp(col);
@@ -2750,9 +3523,19 @@ showDefaultInstructions();
             } else {
                 renderSpreadsheet();
             }
-        
+
             refreshNotifications(); // ← Check for warnings after OCR processing
+            saveDraftNow();         // ← expensive OCR just landed; persist immediately
         }
+        // Flush pending saves when the frame is backgrounded or torn down.
+        // visibilitychange is the reliable signal on mobile; pagehide/beforeunload
+        // are best-effort extras.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveDraftNow();
+        });
+        window.addEventListener('pagehide', () => saveDraftNow());
+        window.addEventListener('beforeunload', () => saveDraftNow());
+
         // ─────────────────────────────────────────────────────────────────────
         // OCR Uploads: Multiple zones, event delegation, state per column
         // ─────────────────────────────────────────────────────────────────────
@@ -3028,10 +3811,35 @@ showDefaultInstructions();
         }
 
         // Notifications
-        function showNotification(message, type = 'success', duration = 5000) {
+        // Global ranking across ALL notification callers. refreshNotifications()
+        // keeps its own row-level priority (missing drawing > low similarity);
+        // this only stops a lower-rank message from wiping a higher-rank one.
+        // Lower number = more important.
+        const NOTIF_RANK = { error: 1, warning: 2, success: 3, instructions: 4 };
+        let _currentNotifRank = 99;
+        let _notifSticky = false;   // an unresolved error/warning is on screen
+
+        function showNotification(message, type = 'success', duration = 5000, opts = {}) {
             const area = document.getElementById('notification-area');
             const icon = document.getElementById('notification-icon');
             const text = document.getElementById('notification-text');
+
+            const rank = NOTIF_RANK[type] ?? 3;
+            const visible = area && !area.classList.contains('notification-hidden');
+            // Errors and warnings hold the bar until something RESOLVES them —
+            // never on a timer. Resolution is exactly one of:
+            //   1. an equal-or-higher priority message arrives
+            //   2. the user dismisses it (×)
+            //   3. the user makes another edit, which calls resetNotificationGate()
+            // State-derived messages (Part Number Not Found, low similarity) are
+            // re-detected by refreshNotifications() on every scan, so they simply
+            // reappear until the underlying row is actually corrected.
+            if (!opts.force && visible && _notifSticky && rank > _currentNotifRank) return;
+            _currentNotifRank = rank;
+            _notifSticky = (rank <= NOTIF_RANK.warning);
+
+            // Drop any action buttons belonging to the previous message
+            clearNotificationActions();
 
             // Set content
             text.textContent = message;
@@ -3059,6 +3867,9 @@ showDefaultInstructions();
         }
 
         function hideNotification() {
+            clearNotificationActions();
+            _currentNotifRank = 99;   // explicit dismissal resolves the message
+            _notifSticky = false;
             document.getElementById('notification-area').className = 'notification-hidden';
         }
 // --- Default instructions text (single source of truth) ---
@@ -3253,11 +4064,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Complete refreshNotifications function - handles all error/warning types
         function refreshNotifications() {
+            // The renderer runs while `hot = new Handsontable(...)` is still
+            // evaluating, so during the first paint this global is not assigned
+            // yet. Without this guard the call below throws, the renderer throws
+            // with it, and Handsontable aborts — leaving a blank table.
+            if (!hot) return;
+
             // Reset notification flag to allow new notifications
             hasWarningNotificationShown = false;
             
             let highestPriorityNotification = null;
-            
+            const dupRows = duplicateChildPartRows();
+
             // Scan all rows for current issues
             for (let row = 0; row < hot.countRows(); row++) {
                 const rowData = hot.getSourceDataAtRow(row);
@@ -3281,15 +4099,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // PRIORITY 1: Missing Drawing Error (OCR mismatch) - RED ICON + NOTIFICATION
                 if (rowData["_missingDrawing"]) {
-                    highestPriorityNotification = { 
-                        message: "Part Number Not Found", 
+                    // Same wording the validators use for this condition. Both
+                    // describe the same row, and the validator's own call to
+                    // requestNotificationRefreshOnce() (plus the renderer's, when
+                    // it paints the red !) means this scan runs immediately after
+                    // one is shown. Identical text makes that handover invisible
+                    // instead of replacing a specific message with a vague one.
+                    const badPart = (rowData["Matched Childpart"] || "").toString().trim();
+                    highestPriorityNotification = {
+                        message: badPart
+                            ? `"${badPart}" is not a valid child part.`
+                            : "Part Number Not Found",
                         type: "error",
-                        priority: 1 
+                        priority: 1
                     };
                     break; // Highest priority, stop checking
                 }
                 
-                // PRIORITY 2: Low Similarity Warning - YELLOW ICON + NOTIFICATION  
+                // PRIORITY 2: Duplicate part number - RED ICON + NOTIFICATION
+                // Wording matches the validators exactly, so whichever writes
+                // first there is no visible swap.
+                if (dupRows.has(row)) {
+                    const dupPart = (rowData["Matched Childpart"] || "").toString().trim();
+                    if (!highestPriorityNotification || highestPriorityNotification.priority > 2) {
+                        highestPriorityNotification = {
+                            message: `"${dupPart}" is already used in another Child Part row.`,
+                            type: "error",
+                            priority: 2
+                        };
+                    }
+                }
+
+                // PRIORITY 3: Low Similarity Warning - YELLOW ICON + NOTIFICATION  
                 if (rowData.Type === "Child Part" && rowData._similarityScore !== undefined && rowData._similarityScore < 0.95) {
                     if (!highestPriorityNotification) {
                         highestPriorityNotification = { 
@@ -3327,7 +4168,13 @@ document.addEventListener('DOMContentLoaded', () => {
 }
         }
 
-      function validateRequiredFields() {
+      // opts.skipRows  physical row indices already written to Glide. Their
+      //                field-level problems cannot be fixed from here, so
+      //                checking them would strand a resume permanently.
+      // opts.resume    a resume already has content, so it does not need to find
+      //                an otherwise-valid row (a PDF-only retry has none).
+      function validateRequiredFields(opts = {}) {
+  const skipRows = opts.skipRows || null;
   const missingColumns = new Set();
   const invalidColumns = new Set();
   let hasValidRow = false;
@@ -3344,6 +4191,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!type && !qty && !table_partNumber) return;
 
     hasValidRow = true;
+
+    // Already in Glide and read-only — nothing here can be corrected, so a
+    // problem on this row must not block the rows that still need sending.
+    // It still participates in the duplicate scan below.
+    if (skipRows && skipRows.has(idx)) return;
 
     // Collect missing fields
     if (!type) missingColumns.add("Type");
@@ -3376,6 +4228,43 @@ document.addEventListener('DOMContentLoaded', () => {
     // }
   });
 
+  // Backstop against duplicate child parts reaching Glide.
+  //
+  // The dropdown already prevents this by filtering used values out of its list,
+  // but pasting or typing bypasses that filter, and of the four duplicate checks
+  // only the auto-match one clears the value — the rest warn and keep it. Since
+  // nothing flags the row, the warning is the only evidence, and it disappears as
+  // soon as any other notification replaces it.
+  //
+  // This changes no UI and no input handling: it reuses the existing validation
+  // result, so whichever route created the duplicate, it cannot be submitted.
+  //
+  // Compared after the same normalisation sendDataToBackend applies (trimmed,
+  // dots stripped), so "D.1.0" and "D10" are correctly seen as one drawing —
+  // they would otherwise land in Glide as two identical rows.
+  const seenDrawings = new Map();
+  const duplicateParts = new Set();
+  spreadsheetData.forEach((row, idx) => {
+    const type = (row.Type || "").trim();
+    const qty = row.Quantity?.text?.trim();
+    // Mirror the row filter in sendDataToBackend: incomplete rows are not sent,
+    // and are already reported above as missing Type/Quantity.
+    if (!qty || !type) return;
+    if (type !== "Child Part" && type !== TYPE_DISPLAY_NAMES["Missing Childpart"]) return;
+    const raw = (row["Matched Childpart"] || "").toString().trim();
+    if (!raw) return;                       // already reported as a missing Part Number
+    const key = raw.replaceAll(".", "");
+    if (seenDrawings.has(key)) {
+      // If both colliding rows are already in Glide there is nothing the user
+      // can do about it here, so reporting it would only block the resume.
+      const firstIdx = seenDrawings.get(key);
+      const bothLocked = skipRows && skipRows.has(idx) && skipRows.has(firstIdx);
+      if (!bothLocked) duplicateParts.add(raw);
+    } else {
+      seenDrawings.set(key, idx);
+    }
+  });
+
   const messages = [];
   if (missingColumns.size > 0) {
     messages.push(`(${Array.from(missingColumns).join(", ")})`);
@@ -3383,9 +4272,12 @@ document.addEventListener('DOMContentLoaded', () => {
   if (invalidColumns.size > 0) {
     messages.push(`Invalid Data (${Array.from(invalidColumns).join(", ")})`);
   }
+  if (duplicateParts.size > 0) {
+    messages.push(`Duplicate Part Number (${Array.from(duplicateParts).join(", ")})`);
+  }
 
   return {
-    isValid: hasValidRow && messages.length === 0,
+    isValid: (hasValidRow || !!opts.resume) && messages.length === 0,
     missingFields: messages
   };
 }
@@ -3397,7 +4289,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 ["Quantity", "Description", "Material"].forEach(col => {
                     if (row[col]) row[col].confidence = 0;
                 });
-            });            
+                // hot.clear() cannot touch PartNumber: it is filtered out of
+                // visibleColumns, so Handsontable has no column for it. Left
+                // behind, its text kept the row non-blank, which saved a draft
+                // straight after a successful submit and offered to "restore"
+                // it on the next load.
+                row.PartNumber = { text: "", confidence: 0 };
+                // These drive the warning icons. hot.clear() empties the cell
+                // values but knows nothing about them, so the red ! survived a
+                // cleared table.
+                delete row._missingDrawing;
+                delete row._needsReview;
+                delete row._similarityScore;
+            });
+            hot.render();
             console.log("✅ Table cleared to default state");
         }
 
@@ -3407,7 +4312,257 @@ document.addEventListener('DOMContentLoaded', () => {
         window.childPartsData = [];
         window.boData = [];
 
-        async function sendDataToBackend() {
+        // Payload rows carry a _pRow marker so locked rows can be identified after
+        // a reload. It must never reach the backend.
+        function stripInternal(rows) {
+            return (rows || []).map(r => {
+                const { _pRow, _sentKey, ...rest } = r;
+                return rest;
+            });
+        }
+
+        // Build the three stages from the current table. Only called for a FRESH
+        // submit — a resume replays the frozen payloads instead.
+        // Stable identity for a row across inserts and deletes. Stored on the row
+        // object so it travels with the row; a position could not.
+        let _sentKeySeq = 0;
+        function ensureSentKey(row) {
+            if (!row._sentKey) row._sentKey = `r${Date.now().toString(36)}-${++_sentKeySeq}`;
+            return row._sentKey;
+        }
+
+        function buildSubmitState() {
+            const childRows = [];
+            const boRows = [];
+            const missingParts = [];
+
+            for (let vRow = 0; vRow < hot.countRows(); vRow++) {
+                const pRow = hot.toPhysicalRow(vRow);   // map visual → physical
+                if (pRow == null) continue;             // skip spare / trimmed rows
+
+                const row = spreadsheetData[pRow];
+                const qty = row.Quantity?.text?.trim();
+                const type = row.Type?.trim();
+
+                // Skip completely empty or incomplete rows
+                if (!qty && !type) continue;
+                if (!qty || !type) continue;
+
+                if (type === "Child Part" || type === TYPE_DISPLAY_NAMES["Missing Childpart"]) {
+                    childRows.push({
+                        _pRow: pRow,
+                        _sentKey: ensureSentKey(row),
+                        itemNumber: lastOcrBomItem + vRow + 1,
+                        quantity: qty,
+                        description: row.Description?.text?.trim() || "",
+                        material: row.Material?.text?.trim() || "",
+                        drawingNumber: (row["Matched Childpart"] || "").replaceAll(".", ""),  //also change in backend at matchedPart in missing Drawing
+                        ocrWarning: getRowWarning(row)
+                    });
+                    if (type === TYPE_DISPLAY_NAMES["Missing Childpart"]) {
+                        missingParts.push(row["Matched Childpart"] || "");
+                    }
+                } else if (type === "BO") {
+                    boRows.push({
+                        _pRow: pRow,
+                        _sentKey: ensureSentKey(row),
+                        itemNumber: lastOcrBomItem + vRow + 1,
+                        quantity: qty,
+                        description: row.Description?.text?.trim() || "",
+                        material: row.Material?.text?.trim() || "",
+                        boughtoutPartNumber: row["Matched Childpart"] || "",
+                        ocrWarning: getRowWarning(row)
+                    });
+                }
+            }
+
+            let maxItemNumber = lastOcrBomItem;
+            [...childRows, ...boRows].forEach(item => {
+                maxItemNumber = Math.max(maxItemNumber, item.itemNumber);
+            });
+
+            // `payload` is what to send next; `sent` is the record of what Glide
+            // already holds. Keeping them apart is what lets a completed stage
+            // accept rows added afterwards without re-sending the earlier ones.
+            return {
+                submissionId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                startedAt: Date.now(),
+                itemBase: lastOcrBomItem,
+                maxItemNumber,
+                childParts: { status: childRows.length ? 'todo' : 'skipped', payload: childRows, sent: [] },
+                pdfs: { status: missingParts.length ? 'todo' : 'skipped', remaining: missingParts, done: [] },
+                boParts: { status: boRows.length ? 'todo' : 'skipped', payload: boRows, sent: [] }
+            };
+        }
+
+        // Called once when a stage's request succeeds.
+        function markStageSent(key) {
+            const st = _submitState[key];
+            if (!st) return;
+            st.sent = (st.sent || []).concat(st.payload || []);
+            st.payload = [];
+            st.status = 'done';
+        }
+
+        // A locked row that no longer matches what was sent means an edit slipped
+        // past readOnly (paste/autofill/undo can). Surface it — that edit can
+        // never reach Glide, because the backend has no update mutation.
+        function divergedLockedRows() {
+            const diverged = [];
+            ['childParts', 'boParts'].forEach(stageName => {
+                const st = _submitState?.[stageName];
+                if (!st) return;
+                (st.sent || []).forEach(sent => {
+                    const row = sent._sentKey
+                        ? spreadsheetData.find(r => r && r._sentKey === sent._sentKey)
+                        : spreadsheetData[sent._pRow];
+                    if (!row) return;
+                    const nowQty = row.Quantity?.text?.trim() || "";
+                    const nowDesc = row.Description?.text?.trim() || "";
+                    const nowMat = row.Material?.text?.trim() || "";
+                    if (nowQty !== sent.quantity || nowDesc !== sent.description || nowMat !== sent.material) {
+                        diverged.push(sent.itemNumber);
+                    }
+                });
+            });
+            return diverged;
+        }
+
+        const STAGE_LABELS = { childParts: 'Child Parts', pdfs: 'Placeholder drawings', boParts: 'BO Parts' };
+
+        function stageRowCount(key, which) {
+            const st = _submitState?.[key];
+            if (!st) return 0;
+            if (key === 'pdfs') return which === 'sent'
+                ? (st.done || []).length
+                : (st.remaining || []).length;
+            return which === 'sent' ? (st.sent || []).length : (st.payload || []).length;
+        }
+
+        // Informational only, with a single acknowledge. The user is never
+        // pushed straight into re-sending — they get to review the table and
+        // see what already landed before pressing anything.
+        // A stage that never reached Glide must be rebuilt from the live table on
+        // resume — otherwise a user who fixes the row that caused the failure
+        // would silently re-send the original bad data, and rows added since
+        // would be dropped. Stages already 'done' keep their frozen payload:
+        // that is the record of what Glide actually holds.
+        function rebuildOutstandingStages() {
+            if (!_submitState) return;
+            const fresh = buildSubmitState();
+
+            // Item numbers already assigned in this submission must never be
+            // reused, or a newly inserted row could collide with one already
+            // written to Glide. Counts both what was sent and what is queued.
+            const used = new Set();
+            ['childParts', 'boParts'].forEach(k => {
+                (_submitState[k]?.sent || []).forEach(r => used.add(r.itemNumber));
+                (_submitState[k]?.payload || []).forEach(r => used.add(r.itemNumber));
+            });
+            let nextItem = Math.max(_submitState.maxItemNumber || 0, _submitState.itemBase || 0);
+
+            // Rows are matched to the previous attempt by physical row index.
+            // Deleting a row before resuming breaks that match, and the shifted
+            // rows are then treated as new — they get fresh item numbers rather
+            // than silently inheriting someone else's.
+            const remap = (rows, prevRows) => {
+                const byKey = new Map((prevRows || []).filter(r => r._sentKey).map(r => [r._sentKey, r]));
+                return rows.map(r => {
+                    const prev = byKey.get(r._sentKey);
+                    if (prev) return { ...r, itemNumber: prev.itemNumber };
+                    do { nextItem += 1; } while (used.has(nextItem));
+                    used.add(nextItem);
+                    return { ...r, itemNumber: nextItem };
+                });
+            };
+
+            // Every stage is rebuilt, including completed ones — a stage that
+            // already succeeded can still gain rows the user typed afterwards,
+            // and those must go out. Rows already written are excluded by
+            // physical row index, so they are never sent twice.
+            ['childParts', 'boParts'].forEach(k => {
+                const st = _submitState[k];
+                if (!st) return;
+                const alreadySent = new Set((st.sent || [])
+                    .map(r => r._sentKey).filter(Boolean));
+                const outstanding = (fresh[k].payload || []).filter(r => !alreadySent.has(r._sentKey));
+                st.payload = remap(outstanding, st.payload);
+
+                if (!st.payload.length) {
+                    // Nothing left to send: completed if anything went out.
+                    st.status = (st.sent || []).length ? 'done' : 'skipped';
+                } else if (st.status === 'done' || st.status === 'skipped') {
+                    st.status = 'todo';        // reopened by rows added since
+                }
+                // 'todo' | 'failed' | 'pending' already mean "runnable" — leave them.
+            });
+
+            const pdfs = _submitState.pdfs;
+            if (pdfs && pdfs.status !== 'done') {
+                const alreadyDone = new Set(pdfs.done || []);
+                pdfs.remaining = (fresh.pdfs.remaining || []).filter(p => !alreadyDone.has(p));
+                if (!pdfs.remaining.length) pdfs.status = 'skipped';
+                else if (pdfs.status === 'skipped') pdfs.status = 'todo';
+            }
+
+            let mx = _submitState.itemBase || 0;
+            ['childParts', 'boParts'].forEach(k => {
+                (_submitState[k]?.sent || []).forEach(r => { mx = Math.max(mx, r.itemNumber); });
+                (_submitState[k]?.payload || []).forEach(r => { mx = Math.max(mx, r.itemNumber); });
+            });
+            _submitState.maxItemNumber = mx;
+        }
+
+        function announceUnresolvedSubmit() {
+            const done = [], outstanding = [];
+            ['childParts', 'pdfs', 'boParts'].forEach(k => {
+                const st = _submitState[k];
+                if (!st || st.status === 'skipped') return;
+                if (stageRowCount(k, 'sent') > 0) done.push(k);
+                if (stageNeedsSending(st) && stageRowCount(k, 'todo') > 0) outstanding.push(k);
+            });
+
+            // A 'pending' stage means the request went out and no reply came
+            // back — we genuinely cannot tell whether Glide stored it. Always
+            // say so; the item counter only sharpens the warning.
+            const pending = ['childParts', 'pdfs', 'boParts'].filter(k => _submitState[k]?.status === 'pending');
+            const counterMoved = currentItemParam() >= (_submitState.maxItemNumber || 0);
+
+            const line = (k, cls) => {
+                const n = stageRowCount(k, cls === 'draft-stage-done' ? 'sent' : 'todo');
+                const label = STAGE_LABELS[k];
+                return `<div class="${cls}">• ${escapeHtml(label)}${n ? ` (${n})` : ''}</div>`;
+            };
+
+            let body = 'Your last submission did not finish.<br><br>';
+            if (done.length) body += `<strong>Already saved to Glide:</strong>${done.map(k => line(k, 'draft-stage-done')).join('')}<br>`;
+            if (outstanding.length) body += `<strong>Not yet saved:</strong>${outstanding.map(k => line(k, 'draft-stage-todo')).join('')}<br>`;
+            if (pending.length) {
+                body += `<strong>Outcome unknown:</strong> ${pending.map(k => escapeHtml(STAGE_LABELS[k])).join(', ')} ` +
+                        `— the request was sent but no reply came back, so it may or may not have saved.` +
+                        (counterMoved ? ` The item counter has moved, which suggests something did land.` : ``) +
+                        ` <strong>Check Glide before sending again.</strong><br><br>`;
+            }
+            body += onlyPdfsOutstanding()
+                ? `All BOM data is saved. Only the placeholder drawing is missing — review, then press <strong>Create drawing</strong>.`
+                : `Review the table, then press <strong>Submit Remaining</strong>. Rows already saved are locked and will not be sent twice.`;
+
+            openDraftModal('Unfinished submission', body, [
+                { label: 'Got it', primary: true, onClick: () => {
+                    showNotification(
+                        onlyPdfsOutstanding()
+                            ? 'All data saved. Placeholder drawing still to create.'
+                            : `Already saved: ${done.map(k => STAGE_LABELS[k]).join(', ') || 'nothing'}. Press Submit Remaining when ready.`,
+                        'warning', 0
+                    );
+                } }
+            ]);
+        }
+
+        async function sendDataToBackend(opts = {}) {
+            // Any Submit press while a submission is unresolved CONTINUES it.
+            // Rebuilding here would re-send stages that already reached Glide.
+            const resume = !!opts.resume || hasUnresolvedSubmit();
             const addDataBtn = document.getElementById("submit-btn");
             const originalText = addDataBtn.textContent;
 
@@ -3415,17 +4570,26 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Provide some visual feedback (you can customize as needed)
                 addDataBtn.disabled = true;
                 addDataBtn.textContent = "Sending...";
-                // Validate required fields:
-                const validation = validateRequiredFields();
-                if (!validation.isValid) {
-                    showNotification(
-                        `Missing Data:\n${validation.missingFields.join(
-                            ", "
-                        )}`, 'error'
-                    );
-                    addDataBtn.disabled = false;
-                    addDataBtn.textContent = originalText;
-                    return;
+
+                {
+                    // Resuming validates too — it can carry newly added or
+                    // corrected rows, and previously skipped this entirely, so a
+                    // duplicate or a bad quantity added after a partial failure
+                    // went straight to Glide. Rows already sent are excluded
+                    // from the field checks but still counted for duplicates.
+                    const validation = resume
+                        ? validateRequiredFields({ skipRows: _lockedRows, resume: true })
+                        : validateRequiredFields();
+                    if (!validation.isValid) {
+                        showNotification(
+                            `Missing Data:\n${validation.missingFields.join(
+                                ", "
+                            )}`, 'error'
+                        );
+                        addDataBtn.disabled = false;
+                        addDataBtn.textContent = originalText;
+                        return;
+                    }
                 }
 
                 const urlParams = new URLSearchParams(window.location.search);
@@ -3436,181 +4600,213 @@ document.addEventListener('DOMContentLoaded', () => {
                     throw new Error("Missing required URL params");
                 }
 
-                // Build ChildParts & BO arrays **in the visual row order**
-                // const childPartsData = [];
-                // const boData = [];
-                childPartsData.length = 0;  // reset
-                boData.length = 0;
-
-                for (let vRow = 0; vRow < hot.countRows(); vRow++) {
-                    const pRow = hot.toPhysicalRow(vRow);   // map visual → physical
-                    if (pRow == null) continue;             // skip spare / trimmed rows
-
-                    const row = spreadsheetData[pRow];
-                    const qty = row.Quantity?.text?.trim();
-                    const type = row.Type?.trim();
-
-                    // Skip completely empty or incomplete rows
-                    if (!qty && !type) continue;
-                    if (!qty || !type) continue;
-
-                    if (type === "Child Part" || type === TYPE_DISPLAY_NAMES["Missing Childpart"]) {
-                        childPartsData.push({
-                            itemNumber: lastOcrBomItem + vRow + 1,
-                            quantity: qty,
-                            description: row.Description?.text?.trim() || "",
-                            material: row.Material?.text?.trim() || "",
-                            drawingNumber: (row["Matched Childpart"] || "").replaceAll(".", ""),  //also change in backend at matchedPart in missing Drawing
-                            ocrWarning: getRowWarning(row)
-                        });
-                    } else if (type === "BO") {
-                        boData.push({
-                            itemNumber: lastOcrBomItem + vRow + 1,
-                            quantity: qty,
-                            description: row.Description?.text?.trim() || "",
-                            material: row.Material?.text?.trim() || "",
-                            boughtoutPartNumber: row["Matched Childpart"] || "",
-                            ocrWarning: getRowWarning(row)
-                        });
+                if (resume && _submitState) {
+                    const diverged = divergedLockedRows();
+                    if (diverged.length) {
+                        showNotification(
+                            `Item ${diverged.join(', ')} already saved to Glide — edits made here won't update it. Correct it in Glide directly.`,
+                            'warning', 0
+                        );
                     }
-                }
-
-                // Calculate the maximum item number from all data
-                let maxItemNumber = lastOcrBomItem; // Start with current value
-                [...childPartsData, ...boData].forEach(item => {
-                    maxItemNumber = Math.max(maxItemNumber, item.itemNumber);
-                });
-
-                // ADD THIS CONSOLE LOG:
-                console.log("📊 Item Number Calculation:");
-                console.log("  Base lastOcrBomItem:", lastOcrBomItem);
-                console.log("  Calculated maxItemNumber:", maxItemNumber);
-                console.log("  Total items:", [...childPartsData, ...boData].length);
-
-                // Send to backend
-                let successful = 0,
-                    total = 0;
-
-                if (childPartsData.length) {
-                    total++;
-                    const respChild = await fetch(
-                          ENDPOINTS.addChildParts,
-                        {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                rows: childPartsData,
-                                project,
-                                parentDrawingNumber,
-                                partNumber,
-                                rowID: rowID,
-                                maxItemNumber: maxItemNumber
-                            }),
-                        }
-                    );
-                    if (!respChild.ok) {
-                        throw new Error(`Failed to add Child Parts: ${await respChild.text()}`);
-                    }
-                    successful++;
-
-                    // Check for Missing Childpart rows and trigger PDF generation for each
-                    const missingChildpartRows = [];
-                    for (let vRow = 0; vRow < hot.countRows(); vRow++) {
-                        const pRow = hot.toPhysicalRow(vRow);
-                        if (pRow == null) continue;
-                        const row = spreadsheetData[pRow];
-                        const type = row.Type?.trim();
-                        const qty = row.Quantity?.text?.trim();
-                        
-                        // Only process rows with data and Missing Childpart type
-                        if (type === TYPE_DISPLAY_NAMES["Missing Childpart"] && qty) {
-                            missingChildpartRows.push(row["Matched Childpart"] || "");
-                        }
-                    }
-
-                    if (missingChildpartRows.length > 0) {
-                        console.log(`📄 Generating ${missingChildpartRows.length} PDFs for missing childparts`);
-                        
-                        // Generate PDF for each missing childpart
-                        const pdfPromises = missingChildpartRows.map(async (matchedPart) => {
-                            try {
-                                const pdfUrl =
-  `${ENDPOINTS.generateMissingChildpartPdf}` +
-  `?project=${encodeURIComponent(project)}` +
-  `&part=${encodeURIComponent(partNumber)}`;
-
-const pdfResp = await fetch(
-  pdfUrl,
-  {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      matchedPart: matchedPart
-    }),
-  }
-);
-
-                                
-                                if (pdfResp.ok) {
-                                    console.log(`✅ Missing childpart PDF generated successfully for: ${matchedPart}`);
-                                    return true;
-                                } else {
-                                    console.warn(`⚠️ PDF generation failed for ${matchedPart}:`, await pdfResp.text());
-                                    return false;
-                                }
-                            } catch (pdfError) {
-                                console.error(`❌ PDF generation error for ${matchedPart}:`, pdfError);
-                                return false;
-                            }
-                        });
-                        
-                        // Wait for all PDFs to complete
-                        const results = await Promise.all(pdfPromises);
-                        const successful = results.filter(r => r).length;
-                        
-                        if (successful > 0) {
-                            console.log(`✅ Generated ${successful} missing childpart PDFs successfully`);
-                        }
-                    }
-
-                }
-                if (boData.length) {
-                    total++;
-                    const respBo = await fetch(
-                            ENDPOINTS.addBoParts,
-                        {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({
-                                rows: boData,
-                                project,
-                                parentDrawingNumber,
-                                partNumber,
-                                rowID: rowID,
-                                maxItemNumber: maxItemNumber
-                            }),
-                        }
-                    );
-                    if (!respBo.ok) {
-                        throw new Error(`Failed to add BO Parts: ${await respBo.text()}`);
-                    }
-                    successful++;
-                }
-
-                if (successful === total && total > 0) {
-                    showNotification(
-                        `Data added successfully!\n- Child Parts: ${childPartsData.length}\n- BO Parts: ${boData.length}`, 'success'
-                    );
-                    clearTableToDefault();
+                    // Pick up corrections and newly added rows for anything that
+                    // has not already reached Glide.
+                    rebuildOutstandingStages();
+                    saveDraftNow();
                 } else {
+                    _submitState = buildSubmitState();
+                    recomputeLockedRows();
+                    saveDraftNow();
+                }
+
+                const childPartsPayload = _submitState.childParts.payload || [];
+                const boPartsPayload = _submitState.boParts.payload || [];
+                const maxItemNumber = _submitState.maxItemNumber;
+
+                const pdfsOutstanding = stageNeedsSending(_submitState.pdfs)
+                    && (_submitState.pdfs.remaining || []).length > 0;
+                const anythingSent = ['childParts', 'boParts']
+                    .some(k => (_submitState[k].sent || []).length > 0)
+                    || (_submitState.pdfs.done || []).length > 0;
+                if (!childPartsPayload.length && !boPartsPayload.length && !pdfsOutstanding && !anythingSent) {
                     throw new Error("No data was processed");
                 }
+
+                // Keep the legacy debug globals populated, matching what actually
+                // goes over the wire (no internal _pRow marker).
+                childPartsData.length = 0;
+                boData.length = 0;
+                stripInternal(childPartsPayload).forEach(r => childPartsData.push(r));
+                stripInternal(boPartsPayload).forEach(r => boData.push(r));
+
+                console.log("📊 Item Number Calculation:");
+                console.log("  Base lastOcrBomItem:", _submitState.itemBase);
+                console.log("  Calculated maxItemNumber:", maxItemNumber);
+                console.log("  Total items:", childPartsPayload.length + boPartsPayload.length);
+
+                // ── Stage 1: Child Parts ───────────────────────────────────
+                // Skipped outright when a previous attempt already landed it —
+                // this is what stops a retry duplicating rows in Glide.
+                if (stageNeedsSending(_submitState.childParts)) {
+                    _submitState.childParts.status = 'pending';
+                    saveDraftNow();
+                    let respChild;
+                    try {
+                        respChild = await fetch(
+                              ENDPOINTS.addChildParts,
+                            {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    rows: stripInternal(childPartsPayload),
+                                    project,
+                                    parentDrawingNumber,
+                                    partNumber,
+                                    rowID: rowID,
+                                    maxItemNumber: maxItemNumber
+                                }),
+                            }
+                        );
+                    } catch (netErr) {
+                        // Left 'pending': the request may or may not have landed.
+                        saveDraftNow();
+                        throw new Error(`Failed to add Child Parts: ${netErr.message}`);
+                    }
+                    if (!respChild.ok) {
+                        _submitState.childParts.status = 'failed';
+                        saveDraftNow();
+                        throw new Error(`Failed to add Child Parts: ${await respChild.text()}`);
+                    }
+                    markStageSent('childParts');
+                    recomputeLockedRows();
+                    saveDraftNow();
+                    if (hot) hot.render();
+                }
+
+                // ── Stage 2: one placeholder PDF per missing drawing ────────
+                // Tracked per part: each call also adds a row to the Drawing
+                // table, so re-sending one already done would duplicate it.
+                if (stageNeedsSending(_submitState.pdfs)) {
+                    _submitState.pdfs.status = 'pending';
+                    saveDraftNow();
+                    const remaining = (_submitState.pdfs.remaining || []).slice();
+                    console.log(`📄 Generating ${remaining.length} PDFs for missing childparts`);
+
+                    const results = await Promise.all(remaining.map(async (matchedPart) => {
+                        try {
+                            const pdfUrl =
+                                `${ENDPOINTS.generateMissingChildpartPdf}` +
+                                `?project=${encodeURIComponent(project)}` +
+                                `&part=${encodeURIComponent(partNumber)}`;
+
+                            const pdfResp = await fetch(pdfUrl, {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ matchedPart: matchedPart }),
+                            });
+
+                            if (pdfResp.ok) {
+                                console.log(`✅ Missing childpart PDF generated successfully for: ${matchedPart}`);
+                                return { matchedPart, ok: true };
+                            }
+                            console.warn(`⚠️ PDF generation failed for ${matchedPart}:`, await pdfResp.text());
+                            return { matchedPart, ok: false };
+                        } catch (pdfError) {
+                            console.error(`❌ PDF generation error for ${matchedPart}:`, pdfError);
+                            return { matchedPart, ok: false };
+                        }
+                    }));
+
+                    results.filter(r => r.ok).forEach(r => {
+                        _submitState.pdfs.done.push(r.matchedPart);
+                        _submitState.pdfs.remaining = _submitState.pdfs.remaining.filter(p => p !== r.matchedPart);
+                    });
+                    const failedPdfs = results.filter(r => !r.ok).map(r => r.matchedPart);
+                    _submitState.pdfs.status = failedPdfs.length ? 'failed' : 'done';
+                    saveDraftNow();
+
+                    // Previously these failures were only logged, which silently
+                    // defeated the point of the placeholder.
+                    if (failedPdfs.length) {
+                        throw new Error(`Could not create placeholder drawing for: ${failedPdfs.join(', ')}`);
+                    }
+                }
+
+                // ── Stage 3: BO Parts ──────────────────────────────────────
+                if (stageNeedsSending(_submitState.boParts)) {
+                    _submitState.boParts.status = 'pending';
+                    saveDraftNow();
+                    let respBo;
+                    try {
+                        respBo = await fetch(
+                                ENDPOINTS.addBoParts,
+                            {
+                                method: "POST",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({
+                                    rows: stripInternal(boPartsPayload),
+                                    project,
+                                    parentDrawingNumber,
+                                    partNumber,
+                                    rowID: rowID,
+                                    maxItemNumber: maxItemNumber
+                                }),
+                            }
+                        );
+                    } catch (netErr) {
+                        saveDraftNow();
+                        throw new Error(`Failed to add BO Parts: ${netErr.message}`);
+                    }
+                    if (!respBo.ok) {
+                        _submitState.boParts.status = 'failed';
+                        saveDraftNow();
+                        throw new Error(`Failed to add BO Parts: ${await respBo.text()}`);
+                    }
+                    markStageSent('boParts');
+                    recomputeLockedRows();
+                    saveDraftNow();
+                    if (hot) hot.render();
+                }
+
+                clearNotificationActions();
+                // force: a warning from the unfinished-submission modal is sticky
+                // and outranks a success, so without this a completed Submit
+                // Remaining showed no confirmation and left the stale warning up.
+                showNotification(
+                    `Data added successfully!\n- Child Parts: ${childPartsPayload.length}\n- BO Parts: ${boPartsPayload.length}`,
+                    'success', 5000, { force: true }
+                );
+                // Unlock first: hot.clear() will not touch readOnly cells, so
+                // clearing while rows are still locked would leave data behind.
+                _lockedRows = new Set();
+                if (hot) hot.render();
+                // Order matters: clearTableToDefault() fires afterChange, which
+                // schedules a save; clearDraft() then cancels that pending timer.
+                clearTableToDefault();
+                clearDraft();          // whole submission landed — drop the draft
             } catch (error) {
                 console.error("Error sending data:", error);
-                showNotification(`Error adding data: ${error.message}`, 'error');
+                clearNotificationActions();
+                const done = [];
+                if (_submitState?.childParts?.status === 'done') done.push('Child Parts');
+                if (_submitState?.pdfs?.status === 'done') done.push('Missing-drawing PDFs');
+                if (_submitState?.boParts?.status === 'done') done.push('BO Parts');
+                // error.message can carry the entire server response body, or a
+                // whole source snippet for a TypeError. The bar is one line —
+                // keep it short and put the full detail in the console above.
+                const raw = String(error.message || 'Unknown error');
+                const brief = raw.length > 110 ? raw.slice(0, 110).trimEnd() + '…' : raw;
+                showNotification(
+                    `${brief}` +
+                    (done.length ? `\nAlready saved (not resent): ${done.join(', ')}.` : '') +
+                    `\nSee the browser console for details.`,
+                    'error'
+                );
+                saveDraftNow();
             } finally {
                 addDataBtn.disabled = false;
-                addDataBtn.textContent = "Submit";
+                // Label states what the NEXT press will do, so there is never a
+                // second competing action anywhere in the UI.
+                refreshSubmitButtonState();
             }
         }
 
@@ -3670,6 +4866,16 @@ const pdfResp = await fetch(
   <div id="instr-modal-card" role="dialog" aria-modal="true" aria-labelledby="instr-modal-title">
     <button id="instr-modal-close" aria-label="Close">×</button>
     <div id="instr-modal-body"></div>
+  </div>
+</div>
+
+<!-- Draft restore / unfinished-submission prompt. Its own element rather than
+     reusing the instructions modal, which carries hover and auto-close timers. -->
+<div id="draft-modal-backdrop" aria-hidden="true">
+  <div id="draft-modal-card" role="dialog" aria-modal="true" aria-labelledby="draft-modal-title" tabindex="-1">
+    <h3 id="draft-modal-title"></h3>
+    <div id="draft-modal-body"></div>
+    <div id="draft-modal-actions"></div>
   </div>
 </div>
 

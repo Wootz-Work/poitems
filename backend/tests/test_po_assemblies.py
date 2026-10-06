@@ -271,6 +271,7 @@ def test_existing_drawing_is_updated_not_duplicated():
 def test_submit_marks_po_accepted():
     glide = FakeGlide(submittable_items())
     client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
+    assert all(a[pa.ASM["internalPoc"]] == "dev@x.com" for a in glide.tables[pa.ASSEMBLIES_TABLE])
     po = glide.tables[pa.PO_TABLE][0]
     assert po[pa.PO_ACCEPTED] is True
     assert po[pa.PO_APPROVED_BY] == "dev@x.com"

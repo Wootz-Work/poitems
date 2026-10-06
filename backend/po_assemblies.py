@@ -103,6 +103,7 @@ ASM = {
     "extractedRowId": "u53LD",
     "mfgStartDate": "6JmvW",
     "dispatchDate": "QNggY",
+    "internalPoc": "HqYCY",
 }
 
 # Child Parts table
@@ -544,7 +545,7 @@ def existing_mutations(item, quantity=None, part_name=None, remove=False):
 EMPTY_EXISTING = {"items": [], "groups": []}
 
 
-def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
+def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=""):
     """
     Turns the PO's line items into Glide work.
 
@@ -559,7 +560,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
     number already exist updates that assembly's quantity instead of creating it, and a group
     whose name matches an existing group assembly in its project adds its members to that
     assembly. `changes` are the page's edits to existing assemblies:
-    [{"key", "quantity"?, "partName"?, "remove"?}].
+    [{"key", "quantity"?, "partName"?, "remove"?}]. `poc` (the publisher's email) becomes the
+    Internal POC of every assembly created.
     """
     existing_by_part = {part_key(i["project"], i["partNumber"]): i for i in existing["items"]}
     existing_by_key = {i["key"]: i for i in existing["items"]}
@@ -648,6 +650,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
         }
         if quantity is not None:
             values[ASM["quantity"]] = quantity
+        if poc:
+            values[ASM["internalPoc"]] = poc
         if source:
             values[ASM["extractedRowId"]] = source["rowId"]
             if source["category"]:
@@ -1086,7 +1090,7 @@ async def submit_po_assemblies(
             logger.exception("po-assemblies submit load failed")
             return _error(502, f"Could not load from Glide: {e}")
 
-        units, errors = build_submit_plan(items, parse_projects(po.get(PO_PROJECTS)), existing, changes)
+        units, errors = build_submit_plan(items, parse_projects(po.get(PO_PROJECTS)), existing, changes, poc=submitted_by)
         if errors:
             return _error(400, "Fix the highlighted rows before submitting", rowErrors=errors)
         if not units:

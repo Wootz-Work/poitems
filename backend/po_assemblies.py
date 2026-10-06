@@ -189,7 +189,7 @@ def get_glide():
 
 # --- Placeholder drawings ---------------------------------------------------------
 
-PLACEHOLDER_NOTE = "Placeholder drawing - replace with the original drawing"
+PLACEHOLDER_NOTE = "Replace original drawing here"
 
 
 def _latin1(text):
@@ -214,7 +214,7 @@ def placeholder_pdf(part_number, part_name):
     pdf.ln(10)
     # The call to action: orange and bold so it stands out on the page
     pdf.set_font("Helvetica", style="B", size=16)
-    pdf.set_text_color(230, 110, 0)
+    pdf.set_text_color(204, 85, 0)  # burnt orange #CC5500
     pdf.multi_cell(0, 8, PLACEHOLDER_NOTE, align="C")
     return bytes(pdf.output())
 

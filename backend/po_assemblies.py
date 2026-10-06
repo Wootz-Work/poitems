@@ -83,7 +83,10 @@ DWG = {
     "quantity": "zbUI2",
     "currentStatus": "Sjgh3",
     "assemblyRowId": "fdWAC",
+    "type": "kECjB",  # "Type - user": Assembly or Part
 }
+DRAWING_TYPE_ASSEMBLY = "Assembly"
+DRAWING_TYPE_PART = "Part"
 
 # Users table
 USER_EMAIL = "Email"
@@ -595,15 +598,22 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         elif projects and item["project"] not in projects:
             errors.append({"rowId": item["rowId"], "message": f"Project \"{item['project']}\" is not on this PO"})
 
-    def check_required(item):
+    def check_required(item, new=True):
         if not item["partNumber"]:
             errors.append({"rowId": item["rowId"], "message": "Assembly number is required"})
         if item["quantity"] is None or item["quantity"] <= 0:
             errors.append({"rowId": item["rowId"], "message": "Quantity is required"})
         check_project(item)
+        # Dates are only needed for assemblies being created, not for quantity updates
+        if new and not item["mfgStartDate"]:
+            errors.append({"rowId": item["rowId"], "message": "Mfg start date is required"})
+        if new and not item["dispatchDate"]:
+            errors.append({"rowId": item["rowId"], "message": "Dispatch date is required"})
 
-    for item in standalone + matched:
+    for item in standalone:
         check_required(item)
+    for item in matched:
+        check_required(item, new=False)
 
     for key, members in groups.items():
         for item in members:
@@ -669,13 +679,14 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             values[ASM["currentStatus"]] = CURRENT_STATUS
         return {"kind": "add-row-to-table", "tableName": ASSEMBLIES_TABLE, "columnValues": values}
 
-    def drawing(project, part_number, part_name, quantity, source):
+    def drawing(project, part_number, part_name, quantity, source, kind=DRAWING_TYPE_ASSEMBLY):
         return {
             "project": project,
             "partNumber": part_number,
             "partName": part_name,
             "quantity": quantity,
             "currentStatus": (source and source["currentStatus"]) or CURRENT_STATUS,
+            "type": kind,
         }
 
     units = []
@@ -755,7 +766,9 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         if master:
             row_ids.append(master["rowId"])
         mutations.extend(mark_submitted(row_id, project) for row_id in row_ids)
-        child_drawings = [drawing(project, item["partNumber"], item["partName"], item["quantity"], item) for item in members]
+        child_drawings = [
+            drawing(project, item["partNumber"], item["partName"], item["quantity"], item, DRAWING_TYPE_PART) for item in members
+        ]
         units.append({
             "kind": "existing-group" if target else "group",
             "project": project,
@@ -812,6 +825,7 @@ def drawing_mutation(job, assembly_row_id):
         DWG["project"]: spec["project"],
         DWG["partName"]: spec["partName"],
         DWG["drawing"]: job["url"],
+        DWG["type"]: spec["type"],
     })
     if assembly_row_id:
         values[DWG["assemblyRowId"]] = assembly_row_id
@@ -935,6 +949,29 @@ MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024
 ATTACHMENT_IDS_TTL_S = 300
 
 
+# Leading bytes of the file types the page can show
+FILE_SIGNATURES = (
+    (b"%PDF", "application/pdf"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_content_type(data, declared):
+    """Drive often labels files application/octet-stream; trust the file's own bytes instead."""
+    head = data[:1024]
+    if b"%PDF" in head:  # a PDF may start with a few junk bytes before its header
+        return "application/pdf"
+    for signature, content_type in FILE_SIGNATURES:
+        if head.startswith(signature):
+            return content_type
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return declared
+
+
 class DriveDownloader:
     """Downloads a Google Drive file shared as "anyone with the link"."""
 
@@ -997,7 +1034,9 @@ async def get_attachment(
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("attachment %s of %s failed: %s", index, po_row_id, e)
         return _error(502, f"Could not download the attachment: {e}")
-    return Response(content=data, media_type=content_type, headers={"Cache-Control": "private, max-age=600"})
+    return Response(
+        content=data, media_type=sniff_content_type(data, content_type), headers={"Cache-Control": "private, max-age=600"}
+    )
 
 
 @router.post("/{po_row_id}/save")

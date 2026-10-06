@@ -12,7 +12,10 @@ PO = "po-1"
 
 
 def line_item(row_id, **fields):
-    row = {"$rowID": row_id, pa.LI["poRowId"]: PO, pa.LI["currentStatus"]: "Mfg"}
+    row = {
+        "$rowID": row_id, pa.LI["poRowId"]: PO, pa.LI["currentStatus"]: "Mfg",
+        pa.LI["mfgStartDate"]: "2026-10-20", pa.LI["dispatchDate"]: "2026-11-15",
+    }
     row.update({pa.LI[key]: value for key, value in fields.items()})
     return row
 
@@ -249,6 +252,7 @@ def test_submit_adds_drawings_linked_to_assemblies():
         ("N-1", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
     ]
     assert all(d[pa.DWG["project"]] == "Proj A" and d[pa.DWG["currentStatus"]] == "Mfg" for d in glide.tables[pa.DRAWINGS_TABLE])
+    assert [d[pa.DWG["type"]] for d in glide.tables[pa.DRAWINGS_TABLE]] == ["Assembly", "Assembly", "Part", "Part"]
     assert len(uploader.uploads) == 4
 
 
@@ -265,6 +269,7 @@ def test_existing_drawing_is_updated_not_duplicated():
     assert existing[pa.DWG["quantity"]] == 10
     assert existing[pa.DWG["currentStatus"]] == "Mfg"
     assert existing[pa.DWG["drawing"]] == "https://real.pdf"
+    assert pa.DWG["type"] not in existing  # an existing drawing keeps its type
     assert ("Proj A", "B-1") not in uploader.uploads
 
 
@@ -454,3 +459,23 @@ def test_status_and_dates_are_saved_and_copied_to_assemblies():
     assert glide.tables[pa.CHILD_PARTS_TABLE][0][pa.CP["parentDrawingNumber"]] == "Kit"
     drawings = {d[pa.DWG["partNumber"]]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
     assert drawings["S-1"][pa.DWG["currentStatus"]] == "Sampling"
+
+
+def test_sniff_content_type_trusts_the_file_bytes():
+    assert pa.sniff_content_type(b"%PDF-1.7 ...", "application/octet-stream") == "application/pdf"
+    assert pa.sniff_content_type(b"\x89PNG\r\n\x1a\n....", "application/octet-stream") == "image/png"
+    assert pa.sniff_content_type(b"\xff\xd8\xff\xe0..", "binary/octet-stream") == "image/jpeg"
+    assert pa.sniff_content_type(b"PK\x03\x04 docx", "application/octet-stream") == "application/octet-stream"
+
+
+def test_dates_are_required_for_new_assemblies_only():
+    items = [
+        line_item("x", partNumber="S-1", quantity=2, project="Proj A", mfgStartDate="", dispatchDate=""),
+        line_item("y", partNumber="E-1", quantity=8, project="Proj A", mfgStartDate="", dispatchDate=""),
+    ]
+    res = client_for(with_existing(FakeGlide(items))).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 400
+    assert res.json()["rowErrors"] == [
+        {"rowId": "x", "message": "Mfg start date is required"},
+        {"rowId": "x", "message": "Dispatch date is required"},
+    ]

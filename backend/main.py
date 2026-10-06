@@ -15,6 +15,7 @@ import tempfile
 import json
 import cloudinary
 import cloudinary.uploader
+import po_assemblies
 
 
 # Configure logging
@@ -28,11 +29,13 @@ print("🚀 Server has started and main.py is loaded")
 # Configure CORS - explicitly allow your GitHub Pages d
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://veenu-wootz.github.io", "http://localhost:3000"],
+    allow_origins=["https://veenu-wootz.github.io", "https://wootz-work.github.io", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["GET", "POST", "HEAD", "OPTIONS"],
     allow_headers=["*"],
 )
+
+app.include_router(po_assemblies.router)
 
 # Paths to pre-downloaded model files
 PADDLE_HOME = os.path.expanduser("~/.paddleocr")

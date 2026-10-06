@@ -41,7 +41,7 @@ RUN ls -la ~/.paddleocr/whl/det/en/en_PP-OCRv3_det_infer/ \
     && ls -la ~/.paddleocr/whl/cls/ch_ppocr_mobile_v2.0_cls_infer/
 
 # Copy application code
-COPY main.py .
+COPY main.py po_assemblies.py ./
 
 # Set environment variables
 ENV PORT=8000

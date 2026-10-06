@@ -1,0 +1,704 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PO Assemblies</title>
+    <link rel="stylesheet" type="text/css"
+        href="https://cdn.jsdelivr.net/npm/handsontable@12.1.0/dist/handsontable.full.min.css" />
+    <script src="https://cdn.jsdelivr.net/npm/handsontable@12.1.0/dist/handsontable.full.min.js"></script>
+    <style>
+        :root {
+            --bg: #f6f7f9;
+            --panel: #ffffff;
+            --text: #1f2937;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --accent: #2563eb;
+            --accent-hover: #1d4ed8;
+            --danger: #b91c1c;
+            --danger-bg: #fef2f2;
+            --ok: #047857;
+            --ok-bg: #ecfdf5;
+            --warn-bg: #fffbeb;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            font-size: 14px;
+        }
+
+        header {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 16px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--border);
+            position: sticky;
+            top: 0;
+            z-index: 200;
+        }
+
+        header h1 { font-size: 17px; margin: 0; }
+        .po-meta { color: var(--muted); }
+        .spacer { flex: 1; }
+
+        .save-status {
+            font-size: 12px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            background: var(--bg);
+            color: var(--muted);
+            white-space: nowrap;
+        }
+        .save-status.saved { color: var(--ok); background: var(--ok-bg); }
+        .save-status.error { color: var(--danger); background: var(--danger-bg); }
+
+        button {
+            font: inherit;
+            border-radius: 6px;
+            padding: 7px 14px;
+            cursor: pointer;
+            border: 1px solid var(--border);
+            background: var(--panel);
+            color: var(--text);
+        }
+        button:hover:not(:disabled) { background: var(--bg); }
+        button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+        button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+        button:disabled { opacity: .55; cursor: not-allowed; }
+
+        main { padding: 16px; }
+
+        .banner {
+            display: none;
+            padding: 10px 14px;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            white-space: pre-line;
+        }
+        .banner.show { display: block; }
+        .banner.error { background: var(--danger-bg); color: var(--danger); border: 1px solid #fecaca; }
+        .banner.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #a7f3d0; }
+        .banner.info { background: var(--warn-bg); color: #92400e; border: 1px solid #fde68a; }
+
+        .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+
+        #grid-wrap {
+            background: var(--panel);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        #loading { padding: 40px; text-align: center; color: var(--muted); }
+
+        /* Grid */
+        .handsontable td.group-row { background: #f5f8ff; }
+        .handsontable td.parent-standalone { color: var(--muted); }
+        .handsontable td.parent-group { color: var(--accent); font-weight: 500; }
+        .handsontable td.has-error { background: var(--danger-bg) !important; }
+        .handsontable td.issue-cell { color: var(--danger); font-size: 12px; white-space: normal; }
+
+        /* Modal */
+        .modal-backdrop {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(17, 24, 39, .4);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+            padding: 16px;
+        }
+        .modal-backdrop.show { display: flex; }
+        .modal {
+            background: var(--panel);
+            border-radius: 10px;
+            padding: 20px;
+            width: 100%;
+            max-width: 420px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, .2);
+        }
+        .modal h2 { font-size: 16px; margin: 0 0 6px; }
+        .modal p { color: var(--muted); margin: 0 0 14px; }
+        .modal input {
+            width: 100%;
+            font: inherit;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            margin-bottom: 6px;
+        }
+        .modal .field-error { color: var(--danger); font-size: 12px; min-height: 16px; }
+        .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+        .modal ul { margin: 0 0 4px; padding-left: 18px; }
+    </style>
+</head>
+
+<body>
+    <header>
+        <h1>PO Assemblies</h1>
+        <span class="po-meta" id="po-meta"></span>
+        <span class="spacer"></span>
+        <span class="save-status" id="save-status">Loading…</span>
+        <button id="add-row" disabled>+ Add row</button>
+        <button id="submit" class="primary" disabled>Submit</button>
+    </header>
+
+    <main>
+        <div class="banner" id="banner"></div>
+        <p class="hint">
+            Edits save automatically. Set <b>Parent assembly</b> to group items under one assembly
+            (they become its child parts), or leave it on Standalone to create the item as its own assembly.
+            Right-click a row to remove it.
+        </p>
+        <div id="grid-wrap">
+            <div id="loading">Loading line items…</div>
+            <div id="grid"></div>
+        </div>
+    </main>
+
+    <div class="modal-backdrop" id="create-modal">
+        <div class="modal" role="dialog" aria-labelledby="create-title">
+            <h2 id="create-title">Create new parent assembly</h2>
+            <p>Its assembly number and name will both be what you type here.</p>
+            <input id="create-name" placeholder="e.g. Fastener kit" autocomplete="off" />
+            <div class="field-error" id="create-error"></div>
+            <div class="actions">
+                <button id="create-cancel">Cancel</button>
+                <button id="create-ok" class="primary">Create</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-backdrop" id="confirm-modal">
+        <div class="modal" role="dialog" aria-labelledby="confirm-title">
+            <h2 id="confirm-title">Submit assemblies?</h2>
+            <div id="confirm-body"></div>
+            <div class="actions">
+                <button id="confirm-cancel">Cancel</button>
+                <button id="confirm-ok" class="primary">Submit</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const params = new URLSearchParams(location.search);
+        const PO_ROW_ID = params.get("po") || params.get("poRowID") || params.get("rowID");
+        const API_BASE = (params.get("api") || "https://dev-ocr-table-extractor.onrender.com").replace(/\/$/, "");
+        const API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}`;
+
+        const STANDALONE = "Standalone";
+        const CREATE_NEW = "+ Create new…";
+        const SAVE_DELAY_MS = 700;
+        // Fields the backend stores; the grid edits these plus `parent`, which maps to partOfGroup/groupName
+        const SAVED_FIELDS = ["partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "rejected", "groupMaster"];
+
+        let hot = null;
+        let rows = [];            // grid rows (records), in display order
+        let groups = [];          // { name, partNumber }
+        let projects = [];
+        const records = new Map(); // localId -> record, including removed rows and new group masters still to save
+        let nextLocalId = 1;
+
+        const $ = (id) => document.getElementById(id);
+
+        // ---------- Records ----------
+
+        function register(rec) {
+            if (!rec._localId) rec._localId = `tmp_${nextLocalId++}`;
+            if (!rec._dirty) rec._dirty = new Set();
+            records.set(rec._localId, rec);
+            return rec;
+        }
+
+        function newRow() {
+            return {
+                rowId: null, partNumber: "", partName: "", quantity: null,
+                partOfGroup: false, groupName: "", project: projects.length === 1 ? projects[0] : "",
+                parent: STANDALONE, _error: "",
+            };
+        }
+
+        function parentOf(rec) {
+            return rec.partOfGroup && rec.groupName ? rec.groupName : STANDALONE;
+        }
+
+        function findGroup(name) {
+            const key = name.trim().toLowerCase();
+            return groups.find((g) => g.name.toLowerCase() === key);
+        }
+
+        function markDirty(rec, keys) {
+            register(rec);
+            keys.forEach((k) => rec._dirty.add(k));
+            scheduleSave();
+        }
+
+        function createGroup(name) {
+            const existing = findGroup(name);
+            if (existing) return existing.name;
+            const group = { name, partNumber: name };
+            groups.push(group);
+            // New groups get a master row like the extractor's, so they reload as dropdown options
+            const master = register({
+                rowId: null, partNumber: name, partName: name, quantity: 1,
+                partOfGroup: false, groupName: name, groupMaster: true, project: "",
+            });
+            markDirty(master, ["partNumber", "partName", "quantity", "partOfGroup", "groupName", "groupMaster"]);
+            return name;
+        }
+
+        function setParent(rec, value) {
+            const name = (value || "").trim();
+            if (!name || name.toLowerCase() === STANDALONE.toLowerCase()) {
+                rec.partOfGroup = false;
+                rec.groupName = "";
+            } else {
+                rec.partOfGroup = true;
+                rec.groupName = createGroup(name);
+            }
+            rec.parent = parentOf(rec);
+            markDirty(rec, ["partOfGroup", "groupName"]);
+        }
+
+        // ---------- Saving ----------
+
+        let saveTimer = null;
+        let saving = null;      // promise of the save in flight
+        let retryDelay = 2000;
+
+        function setStatus(state, text) {
+            const el = $("save-status");
+            el.className = `save-status ${state}`;
+            el.textContent = text;
+        }
+
+        function hasPending() {
+            if (hasDirty()) return true;
+            for (const rec of records.values()) if (rec._creating) return true;
+            return false;
+        }
+
+        function scheduleSave(delay = SAVE_DELAY_MS) {
+            setStatus("", "Saving…");
+            clearTimeout(saveTimer);
+            saveTimer = setTimeout(flush, delay);
+        }
+
+        function isEmptyNew(rec) {
+            return !rec.rowId && !rec.groupMaster && !rec.partNumber && !rec.partName && rec.quantity == null;
+        }
+
+        async function flush() {
+            clearTimeout(saveTimer);
+            if (saving) return saving.then(() => (hasDirty() ? flush() : undefined));
+
+            const updates = [], creates = [], sent = [];
+            for (const rec of records.values()) {
+                if (!rec._dirty.size || rec._creating) continue;
+                if (!rec.rowId) {
+                    if (rec.rejected) { records.delete(rec._localId); continue; } // removed before it was ever saved
+                    if (isEmptyNew(rec)) continue;
+                    const fields = {};
+                    SAVED_FIELDS.forEach((k) => { if (rec[k] !== undefined && rec[k] !== "" && rec[k] !== null) fields[k] = rec[k]; });
+                    creates.push({ tempId: rec._localId, fields });
+                    rec._creating = true;
+                } else {
+                    const fields = {};
+                    rec._dirty.forEach((k) => { fields[k] = rec[k] === undefined ? null : rec[k]; });
+                    updates.push({ rowId: rec.rowId, fields });
+                }
+                sent.push([rec, new Set(rec._dirty)]);
+                rec._dirty.clear();
+            }
+            if (!sent.length) {
+                if (!hasPending()) setStatus("saved", "All changes saved");
+                return;
+            }
+
+            saving = (async () => {
+                try {
+                    const res = await fetch(`${API}/save`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ updates, creates }),
+                        keepalive: true,
+                    });
+                    const body = await res.json().catch(() => ({}));
+                    if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+                    for (const [rec] of sent) {
+                        if (rec._creating) {
+                            rec.rowId = body.created?.[rec._localId] || rec.rowId;
+                            rec._creating = false;
+                        }
+                    }
+                    retryDelay = 2000;
+                    return true;
+                } catch (err) {
+                    console.error("Save failed", err);
+                    // Put the changes back so the retry sends them again
+                    for (const [rec, keys] of sent) {
+                        keys.forEach((k) => rec._dirty.add(k));
+                        rec._creating = false;
+                    }
+                    setStatus("error", `Not saved – retrying (${err.message})`);
+                    saveTimer = setTimeout(flush, retryDelay);
+                    retryDelay = Math.min(retryDelay * 2, 30000);
+                    return false;
+                } finally {
+                    saving = null;
+                }
+            })();
+
+            const ok = await saving;
+            if (!ok) return;
+            if (hasDirty()) return flush();
+            setStatus("saved", "All changes saved");
+        }
+
+        function hasDirty() {
+            for (const rec of records.values()) {
+                if (rec._dirty.size && !rec._creating && !(isEmptyNew(rec) && !rec.rejected)) return true;
+            }
+            return false;
+        }
+
+        // Save straight away when the page is hidden or closed
+        document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
+        window.addEventListener("pagehide", () => flush());
+        window.addEventListener("beforeunload", (e) => {
+            if (hasDirty() || saving) { flush(); e.preventDefault(); e.returnValue = ""; }
+        });
+
+        async function flushAll() {
+            for (let i = 0; i < 20; i++) {
+                await flush();
+                if (!hasDirty() && !saving && !hasPending()) return true;
+                if ($("save-status").classList.contains("error")) return false;
+                await new Promise((r) => setTimeout(r, 300));
+            }
+            return !hasDirty();
+        }
+
+        // ---------- Grid ----------
+
+        function parentOptions() {
+            return [STANDALONE, ...groups.map((g) => g.name), CREATE_NEW];
+        }
+
+        // Runs as a Handsontable hook, so `this` is the grid (also during the first render, before `hot` is set)
+        function decorate(td, row, col, prop) {
+            const rec = rows[this.toPhysicalRow(row)];
+            if (!rec) return;
+            td.classList.toggle("group-row", rec.partOfGroup && !!rec.groupName);
+            td.classList.toggle("has-error", !!rec._error && prop !== "_error");
+            if (prop === "parent") {
+                td.classList.toggle("parent-standalone", !(rec.partOfGroup && rec.groupName));
+                td.classList.toggle("parent-group", rec.partOfGroup && !!rec.groupName);
+            }
+            if (prop === "_error") td.classList.add("issue-cell");
+        }
+
+        function buildGrid() {
+            $("loading").style.display = "none";
+            hot = new Handsontable($("grid"), {
+                data: rows,
+                dataSchema: newRow,
+                colHeaders: ["Assembly number", "Assembly name", "Qty", "Parent assembly", "Added to project", "Issue"],
+                columns: [
+                    { data: "partNumber" },
+                    { data: "partName" },
+                    { data: "quantity", type: "numeric", allowInvalid: false },
+                    {
+                        data: "parent",
+                        type: "dropdown",
+                        source: (query, process) => process(parentOptions()),
+                        strict: false,   // typing a new name creates a new parent
+                        allowInvalid: true,
+                        filter: false,
+                    },
+                    {
+                        data: "project",
+                        type: "dropdown",
+                        source: (query, process) => process(projects),
+                        strict: true,
+                        allowInvalid: false,
+                        filter: false,
+                    },
+                    { data: "_error", readOnly: true },
+                ],
+                colWidths: [170, 240, 70, 200, 190, 240],
+                rowHeaders: true,
+                stretchH: "all",
+                height: "auto",
+                minSpareRows: 0,
+                autoWrapRow: true,
+                wordWrap: true,
+                licenseKey: "non-commercial-and-evaluation",
+                afterRenderer: decorate,
+                contextMenu: {
+                    items: {
+                        add_below: {
+                            name: "Add row below",
+                            callback: (key, selection) => {
+                                const at = selection[selection.length - 1].end.row + 1;
+                                hot.alter("insert_row", at);
+                            },
+                        },
+                        remove: {
+                            name: "Remove row(s)",
+                            callback: (key, selection) => removeSelected(selection),
+                        },
+                    },
+                },
+                afterCreateRow: (index, amount) => {
+                    for (let i = index; i < index + amount; i++) register(rows[hot.toPhysicalRow(i)]);
+                },
+                afterChange: onChange,
+            });
+        }
+
+        function onChange(changes, source) {
+            if (!changes || source === "loadData" || source === "internal") return;
+            let rerender = false;
+            for (const [row, prop, oldValue, newValue] of changes) {
+                const rec = rows[hot.toPhysicalRow(row)];
+                if (!rec || oldValue === newValue) continue;
+                register(rec);
+                if (rec._error) { rec._error = ""; rerender = true; }
+
+                if (prop === "parent") {
+                    if (newValue === CREATE_NEW) {
+                        rec.parent = parentOf(rec);
+                        rerender = true;
+                        openCreateModal(rec);
+                        continue;
+                    }
+                    setParent(rec, newValue);
+                    rerender = true;
+                } else if (prop === "quantity") {
+                    if (newValue === "" || newValue == null) rec.quantity = null;
+                    else if (isNaN(Number(newValue))) { rec.quantity = oldValue; rerender = true; continue; }
+                    else rec.quantity = Number(newValue);
+                    markDirty(rec, ["quantity"]);
+                } else if (prop === "partNumber" || prop === "partName" || prop === "project") {
+                    rec[prop] = newValue == null ? "" : String(newValue);
+                    // A new row needs its project and parent fields saved along with its first value
+                    markDirty(rec, rec.rowId ? [prop] : [prop, "project", "partOfGroup", "groupName"]);
+                }
+            }
+            if (rerender) hot.render();
+        }
+
+        function removeSelected(selection) {
+            const indices = new Set();
+            for (const range of selection) {
+                for (let r = Math.min(range.start.row, range.end.row); r <= Math.max(range.start.row, range.end.row); r++) indices.add(r);
+            }
+            const sorted = [...indices].sort((a, b) => b - a);
+            const named = sorted.map((r) => rows[hot.toPhysicalRow(r)]).filter((rec) => rec && (rec.partNumber || rec.partName));
+            if (named.length && !confirm(`Remove ${named.length} row(s)? They will be marked as rejected and won't be submitted.`)) return;
+            for (const r of sorted) {
+                const rec = rows[hot.toPhysicalRow(r)];
+                if (!rec) continue;
+                register(rec);
+                rec.rejected = true;
+                markDirty(rec, ["rejected"]);
+                hot.alter("remove_row", r);
+            }
+        }
+
+        // ---------- "Create new" parent ----------
+
+        let createTarget = null;
+
+        function openCreateModal(rec) {
+            createTarget = rec;
+            $("create-name").value = "";
+            $("create-error").textContent = "";
+            $("create-modal").classList.add("show");
+            setTimeout(() => $("create-name").focus(), 0);
+        }
+
+        function closeCreateModal() {
+            $("create-modal").classList.remove("show");
+            createTarget = null;
+        }
+
+        function confirmCreate() {
+            const name = $("create-name").value.trim();
+            if (!name) { $("create-error").textContent = "Enter a name"; return; }
+            if (name.toLowerCase() === STANDALONE.toLowerCase() || name === CREATE_NEW) {
+                $("create-error").textContent = "Choose a different name"; return;
+            }
+            const rec = createTarget;
+            closeCreateModal();
+            if (rec) setParent(rec, name);
+            else createGroup(name);
+            hot.render();
+        }
+
+        $("create-ok").addEventListener("click", confirmCreate);
+        $("create-cancel").addEventListener("click", closeCreateModal);
+        $("create-name").addEventListener("keydown", (e) => {
+            if (e.key === "Enter") confirmCreate();
+            if (e.key === "Escape") closeCreateModal();
+        });
+
+        // ---------- Submit ----------
+
+        function summary() {
+            const named = rows.filter((r) => r.partNumber || r.partName || r.quantity != null);
+            const grouped = new Map();
+            let standalone = 0;
+            for (const r of named) {
+                if (r.partOfGroup && r.groupName) {
+                    const key = r.groupName.toLowerCase();
+                    grouped.set(key, (grouped.get(key) || 0) + 1);
+                } else standalone++;
+            }
+            const children = [...grouped.values()].reduce((a, b) => a + b, 0);
+            return { standalone, groups: grouped.size, children };
+        }
+
+        function openConfirm() {
+            const s = summary();
+            if (!s.standalone && !s.groups) { showBanner("info", "There is nothing to submit."); return; }
+            const body = $("confirm-body");
+            body.innerHTML = "";
+            const list = document.createElement("ul");
+            [
+                `${s.standalone} standalone assembl${s.standalone === 1 ? "y" : "ies"}`,
+                `${s.groups} parent assembl${s.groups === 1 ? "y" : "ies"} with ${s.children} child part${s.children === 1 ? "" : "s"}`,
+            ].forEach((text) => { const li = document.createElement("li"); li.textContent = text; list.appendChild(li); });
+            body.appendChild(list);
+            const p = document.createElement("p");
+            p.textContent = "Submitted items are removed from this table.";
+            body.appendChild(p);
+            $("confirm-modal").classList.add("show");
+        }
+
+        async function submit() {
+            $("confirm-modal").classList.remove("show");
+            setBusy(true);
+            hideBanner();
+            try {
+                if (!(await flushAll())) throw new Error("Your latest edits could not be saved. Check your connection and try again.");
+                setStatus("", "Submitting…");
+                const res = await fetch(`${API}/submit`, { method: "POST" });
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) {
+                    if (body.rowErrors) showRowErrors(body.rowErrors);
+                    throw new Error(body.error || `Submit failed (HTTP ${res.status})`);
+                }
+                const parts = [
+                    `${body.standaloneAssemblies} standalone assembl${body.standaloneAssemblies === 1 ? "y" : "ies"}`,
+                    `${body.groupAssemblies} parent assembl${body.groupAssemblies === 1 ? "y" : "ies"}`,
+                    `${body.childParts} child part${body.childParts === 1 ? "" : "s"}`,
+                ];
+                await load();
+                showBanner("ok", `Submitted: ${parts.join(", ")}.`);
+            } catch (err) {
+                showBanner("error", err.message);
+                setStatus("saved", "All changes saved");
+            } finally {
+                setBusy(false);
+            }
+        }
+
+        function showRowErrors(rowErrors) {
+            const byRow = new Map();
+            for (const e of rowErrors) {
+                byRow.set(e.rowId, byRow.has(e.rowId) ? `${byRow.get(e.rowId)}; ${e.message}` : e.message);
+            }
+            rows.forEach((r) => { r._error = byRow.get(r.rowId) || ""; });
+            hot.render();
+        }
+
+        $("submit").addEventListener("click", openConfirm);
+        $("confirm-ok").addEventListener("click", submit);
+        $("confirm-cancel").addEventListener("click", () => $("confirm-modal").classList.remove("show"));
+        $("add-row").addEventListener("click", () => {
+            hot.alter("insert_row", rows.length);
+            hot.selectCell(rows.length - 1, 0);
+        });
+
+        // ---------- Loading ----------
+
+        function setBusy(busy) {
+            $("submit").disabled = busy;
+            $("add-row").disabled = busy;
+            if (hot) hot.updateSettings({ readOnly: busy });
+        }
+
+        function showBanner(kind, text) {
+            const el = $("banner");
+            el.className = `banner show ${kind}`;
+            el.textContent = text;
+        }
+
+        function hideBanner() { $("banner").className = "banner"; }
+
+        async function load() {
+            const res = await fetch(API);
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body.error || `Could not load line items (HTTP ${res.status})`);
+
+            projects = body.projects;
+            groups = body.groups.map((g) => ({ name: g.name, partNumber: g.partNumber }));
+            records.clear();
+            rows.length = 0;
+            for (const r of body.rows) {
+                const rec = register({ ...r, parent: "", _error: "" });
+                rec.parent = parentOf(rec);
+                // With a single project on the PO there is nothing to choose, so fill it in
+                if (!rec.project && projects.length === 1) {
+                    rec.project = projects[0];
+                    markDirty(rec, ["project"]);
+                }
+                rows.push(rec);
+            }
+
+            const po = body.po;
+            $("po-meta").textContent = [po.poNumber && `PO ${po.poNumber}`, po.customer].filter(Boolean).join(" · ");
+            if (!projects.length) {
+                showBanner("info", "This PO has no projects in \"Added To Projects\" yet, so items can't be submitted. Add the PO to a project first.");
+            } else if (!rows.length) {
+                showBanner("info", body.submittedCount
+                    ? "Every line item on this PO has been submitted. Use + Add row to add more."
+                    : "No line items were extracted for this PO. Use + Add row to add them.");
+            }
+
+            if (hot) hot.loadData(rows); else buildGrid();
+            if (hasDirty()) scheduleSave(); else setStatus("saved", "All changes saved");
+            setBusy(false);
+        }
+
+        (async function init() {
+            if (!PO_ROW_ID) {
+                $("loading").textContent = "Open this page from the PO in Glide (the link must include ?po=<PO row ID>).";
+                setStatus("error", "No PO");
+                return;
+            }
+            try {
+                await load();
+            } catch (err) {
+                console.error(err);
+                $("loading").textContent = "";
+                showBanner("error", `${err.message}\n\nReload the page to try again.`);
+                setStatus("error", "Not loaded");
+            }
+        })();
+    </script>
+</body>
+
+</html>

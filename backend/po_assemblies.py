@@ -212,9 +212,10 @@ def placeholder_pdf(part_number, part_name):
     pdf.set_font("Helvetica", size=16)
     pdf.multi_cell(0, 9, _latin1(f"Part number: {part_number}"), align="C")
     pdf.ln(10)
-    pdf.set_font("Helvetica", size=11)
-    pdf.set_text_color(110, 110, 110)
-    pdf.multi_cell(0, 6, PLACEHOLDER_NOTE, align="C")
+    # The call to action: orange and bold so it stands out on the page
+    pdf.set_font("Helvetica", style="B", size=16)
+    pdf.set_text_color(230, 110, 0)
+    pdf.multi_cell(0, 8, PLACEHOLDER_NOTE, align="C")
     return bytes(pdf.output())
 
 

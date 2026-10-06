@@ -252,6 +252,7 @@ def test_submit_adds_drawings_linked_to_assemblies():
         ("N-1", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
     ]
     assert all(d[pa.DWG["project"]] == "Proj A" and d[pa.DWG["currentStatus"]] == "Mfg" for d in glide.tables[pa.DRAWINGS_TABLE])
+    assert [d[pa.DWG["type"]] for d in glide.tables[pa.DRAWINGS_TABLE]] == ["Assembly", "Assembly", "Part", "Part"]
     assert len(uploader.uploads) == 4
 
 
@@ -268,6 +269,7 @@ def test_existing_drawing_is_updated_not_duplicated():
     assert existing[pa.DWG["quantity"]] == 10
     assert existing[pa.DWG["currentStatus"]] == "Mfg"
     assert existing[pa.DWG["drawing"]] == "https://real.pdf"
+    assert pa.DWG["type"] not in existing  # an existing drawing keeps its type
     assert ("Proj A", "B-1") not in uploader.uploads
 
 

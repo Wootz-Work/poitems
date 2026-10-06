@@ -83,7 +83,10 @@ DWG = {
     "quantity": "zbUI2",
     "currentStatus": "Sjgh3",
     "assemblyRowId": "fdWAC",
+    "type": "kECjB",  # "Type - user": Assembly or Part
 }
+DRAWING_TYPE_ASSEMBLY = "Assembly"
+DRAWING_TYPE_PART = "Part"
 
 # Users table
 USER_EMAIL = "Email"
@@ -676,13 +679,14 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             values[ASM["currentStatus"]] = CURRENT_STATUS
         return {"kind": "add-row-to-table", "tableName": ASSEMBLIES_TABLE, "columnValues": values}
 
-    def drawing(project, part_number, part_name, quantity, source):
+    def drawing(project, part_number, part_name, quantity, source, kind=DRAWING_TYPE_ASSEMBLY):
         return {
             "project": project,
             "partNumber": part_number,
             "partName": part_name,
             "quantity": quantity,
             "currentStatus": (source and source["currentStatus"]) or CURRENT_STATUS,
+            "type": kind,
         }
 
     units = []
@@ -762,7 +766,9 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         if master:
             row_ids.append(master["rowId"])
         mutations.extend(mark_submitted(row_id, project) for row_id in row_ids)
-        child_drawings = [drawing(project, item["partNumber"], item["partName"], item["quantity"], item) for item in members]
+        child_drawings = [
+            drawing(project, item["partNumber"], item["partName"], item["quantity"], item, DRAWING_TYPE_PART) for item in members
+        ]
         units.append({
             "kind": "existing-group" if target else "group",
             "project": project,
@@ -819,6 +825,7 @@ def drawing_mutation(job, assembly_row_id):
         DWG["project"]: spec["project"],
         DWG["partName"]: spec["partName"],
         DWG["drawing"]: job["url"],
+        DWG["type"]: spec["type"],
     })
     if assembly_row_id:
         values[DWG["assemblyRowId"]] = assembly_row_id

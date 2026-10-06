@@ -454,3 +454,10 @@ def test_status_and_dates_are_saved_and_copied_to_assemblies():
     assert glide.tables[pa.CHILD_PARTS_TABLE][0][pa.CP["parentDrawingNumber"]] == "Kit"
     drawings = {d[pa.DWG["partNumber"]]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
     assert drawings["S-1"][pa.DWG["currentStatus"]] == "Sampling"
+
+
+def test_sniff_content_type_trusts_the_file_bytes():
+    assert pa.sniff_content_type(b"%PDF-1.7 ...", "application/octet-stream") == "application/pdf"
+    assert pa.sniff_content_type(b"\x89PNG\r\n\x1a\n....", "application/octet-stream") == "image/png"
+    assert pa.sniff_content_type(b"\xff\xd8\xff\xe0..", "binary/octet-stream") == "image/jpeg"
+    assert pa.sniff_content_type(b"PK\x03\x04 docx", "application/octet-stream") == "application/octet-stream"

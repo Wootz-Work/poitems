@@ -935,6 +935,29 @@ MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024
 ATTACHMENT_IDS_TTL_S = 300
 
 
+# Leading bytes of the file types the page can show
+FILE_SIGNATURES = (
+    (b"%PDF", "application/pdf"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+)
+
+
+def sniff_content_type(data, declared):
+    """Drive often labels files application/octet-stream; trust the file's own bytes instead."""
+    head = data[:1024]
+    if b"%PDF" in head:  # a PDF may start with a few junk bytes before its header
+        return "application/pdf"
+    for signature, content_type in FILE_SIGNATURES:
+        if head.startswith(signature):
+            return content_type
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return declared
+
+
 class DriveDownloader:
     """Downloads a Google Drive file shared as "anyone with the link"."""
 
@@ -997,7 +1020,9 @@ async def get_attachment(
     except (httpx.HTTPError, ValueError) as e:
         logger.warning("attachment %s of %s failed: %s", index, po_row_id, e)
         return _error(502, f"Could not download the attachment: {e}")
-    return Response(content=data, media_type=content_type, headers={"Cache-Control": "private, max-age=600"})
+    return Response(
+        content=data, media_type=sniff_content_type(data, content_type), headers={"Cache-Control": "private, max-age=600"}
+    )
 
 
 @router.post("/{po_row_id}/save")

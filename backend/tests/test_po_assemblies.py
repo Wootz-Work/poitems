@@ -12,7 +12,10 @@ PO = "po-1"
 
 
 def line_item(row_id, **fields):
-    row = {"$rowID": row_id, pa.LI["poRowId"]: PO, pa.LI["currentStatus"]: "Mfg"}
+    row = {
+        "$rowID": row_id, pa.LI["poRowId"]: PO, pa.LI["currentStatus"]: "Mfg",
+        pa.LI["mfgStartDate"]: "2026-10-20", pa.LI["dispatchDate"]: "2026-11-15",
+    }
     row.update({pa.LI[key]: value for key, value in fields.items()})
     return row
 
@@ -461,3 +464,16 @@ def test_sniff_content_type_trusts_the_file_bytes():
     assert pa.sniff_content_type(b"\x89PNG\r\n\x1a\n....", "application/octet-stream") == "image/png"
     assert pa.sniff_content_type(b"\xff\xd8\xff\xe0..", "binary/octet-stream") == "image/jpeg"
     assert pa.sniff_content_type(b"PK\x03\x04 docx", "application/octet-stream") == "application/octet-stream"
+
+
+def test_dates_are_required_for_new_assemblies_only():
+    items = [
+        line_item("x", partNumber="S-1", quantity=2, project="Proj A", mfgStartDate="", dispatchDate=""),
+        line_item("y", partNumber="E-1", quantity=8, project="Proj A", mfgStartDate="", dispatchDate=""),
+    ]
+    res = client_for(with_existing(FakeGlide(items))).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 400
+    assert res.json()["rowErrors"] == [
+        {"rowId": "x", "message": "Mfg start date is required"},
+        {"rowId": "x", "message": "Dispatch date is required"},
+    ]

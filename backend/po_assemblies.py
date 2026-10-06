@@ -595,15 +595,22 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         elif projects and item["project"] not in projects:
             errors.append({"rowId": item["rowId"], "message": f"Project \"{item['project']}\" is not on this PO"})
 
-    def check_required(item):
+    def check_required(item, new=True):
         if not item["partNumber"]:
             errors.append({"rowId": item["rowId"], "message": "Assembly number is required"})
         if item["quantity"] is None or item["quantity"] <= 0:
             errors.append({"rowId": item["rowId"], "message": "Quantity is required"})
         check_project(item)
+        # Dates are only needed for assemblies being created, not for quantity updates
+        if new and not item["mfgStartDate"]:
+            errors.append({"rowId": item["rowId"], "message": "Mfg start date is required"})
+        if new and not item["dispatchDate"]:
+            errors.append({"rowId": item["rowId"], "message": "Dispatch date is required"})
 
-    for item in standalone + matched:
+    for item in standalone:
         check_required(item)
+    for item in matched:
+        check_required(item, new=False)
 
     for key, members in groups.items():
         for item in members:

@@ -365,8 +365,14 @@
         let groups = [];           // { name, partNumber, existing, project }
         let projects = [];
         let statuses = ["Mfg", "Sampling"];
+        // Mfg start date defaults to tomorrow (local date)
+        function tomorrow() {
+            const d = new Date();
+            d.setDate(d.getDate() + 1);
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        }
         // Last values set with "Set for all", used for rows added afterwards
-        const defaultDates = { mfgStartDate: "", dispatchDate: "" };
+        const defaultDates = { mfgStartDate: tomorrow(), dispatchDate: "" };
         let existing = [];         // assemblies already in the PO's projects
         let existingEdits = {};    // key -> { quantity?, partName?, remove? }, kept in the browser until publish
         const records = new Map(); // localId -> record (rows, removed rows and new group masters still to save)
@@ -620,6 +626,8 @@
             if (!rec.partNumber) problems.partNumber = true;
             if (!(rec.quantity > 0)) problems.quantity = true;
             if (!rec.project) problems.project = true;
+            if (!rec.mfgStartDate) problems.mfgStartDate = true;
+            if (!rec.dispatchDate) problems.dispatchDate = true;
             return problems;
         }
 
@@ -695,8 +703,8 @@
                 h("span", { class: "num" }, "Qty *"),
                 h("span", {}, withSelectAll ? "Project *" : "Project"),
                 h("span", {}, "Status"),
-                h("span", {}, "Mfg start date"),
-                h("span", {}, "Dispatch date"),
+                h("span", {}, withSelectAll ? "Mfg start date *" : "Mfg start date"),
+                h("span", {}, withSelectAll ? "Dispatch date *" : "Dispatch date"),
                 h("span", {}),
             );
         }
@@ -807,9 +815,9 @@
         }
 
         function dateCell(rec, field, label) {
-            return h("span", { class: "cell" }, h("input", {
+            return h("span", { class: "cell", "data-check": `row|${rec._localId}|${field}` }, h("input", {
                 type: "date", class: "in date", value: rec[field] || "", "aria-label": label, "data-focus": `${rec._localId}:${field}`,
-                onchange: (e) => { rec[field] = e.target.value; markDirty(rec, rec.rowId ? [field] : [field, ...NEW_ROW_FIELDS]); },
+                onchange: (e) => { rec[field] = e.target.value; markDirty(rec, rec.rowId ? [field] : [field, ...NEW_ROW_FIELDS]); refreshChrome(); },
             }));
         }
 
@@ -1433,6 +1441,10 @@
             rows = [];
             for (const r of body.rows) {
                 const rec = register({ ...r });
+                if (!rec.mfgStartDate) {
+                    rec.mfgStartDate = tomorrow();
+                    markDirty(rec, ["mfgStartDate"]);
+                }
                 // With one project on the PO there is nothing to choose, so fill it in
                 if (!rec.project && projects.length === 1) {
                     rec.project = projects[0];
@@ -1443,7 +1455,7 @@
             // "Set for all items" starts from the date every row already shares, if they do
             for (const field of ["mfgStartDate", "dispatchDate"]) {
                 const values = new Set(rows.map((r) => r[field] || ""));
-                defaultDates[field] = values.size === 1 ? [...values][0] : "";
+                defaultDates[field] = values.size === 1 ? [...values][0] : (field === "mfgStartDate" ? tomorrow() : "");
             }
             if (!rows.length && !existing.length && projects.length) rows.push(newRecord());
 

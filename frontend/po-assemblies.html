@@ -5,6 +5,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Add assemblies</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
         :root {
             --bg: #0f0f10;
@@ -120,16 +121,25 @@
             flex: 1;
             min-height: 0;
             display: flex;
-            gap: 16px;
             padding: 16px 24px 24px;
         }
+        .splitter { flex: none; width: 16px; cursor: col-resize; position: relative; touch-action: none; }
+        .splitter::after {
+            content: ""; position: absolute; top: 50%; left: 50%; width: 4px; height: 40px; border-radius: 2px;
+            transform: translate(-50%, -50%); background: var(--line-strong); transition: background .15s, height .15s;
+        }
+        .splitter:hover::after, .splitter:focus-visible::after, body.resizing .splitter::after { background: var(--primary); height: 64px; }
+        .splitter:focus-visible { outline: none; }
+        body.resizing { cursor: col-resize; user-select: none; }
+        body.resizing iframe { pointer-events: none; }
         .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
         .doc { flex: 4 1 0; display: flex; flex-direction: column; }
         .items { flex: 6 1 0; display: flex; flex-direction: column; }
 
         @media (max-width: 1000px) {
             body { height: auto; }
-            main { flex-direction: column; }
+            main { flex-direction: column; gap: 16px; }
+            .splitter { display: none; }
             .doc { flex: none; height: 60vh; }
             .items { flex: none; }
         }
@@ -143,13 +153,29 @@
         .viewer { flex: 1; min-height: 0; background: var(--viewer); position: relative; }
         .viewer iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
         .viewer .empty { padding: 40px 24px; text-align: center; color: var(--muted); }
+        .doc-tools { display: inline-flex; align-items: center; gap: 2px; margin-left: auto; }
+        .doc-tools button { height: 30px; min-width: 30px; padding: 0 8px; border: none; border-radius: 6px; background: transparent; color: var(--muted); font-size: 13px; }
+        .doc-tools button:hover { background: var(--hover); color: var(--text); }
+        .doc-tools .pct { min-width: 52px; font-variant-numeric: tabular-nums; }
+        .doc-tools + .doc-open { margin-left: 0; }
+        .pdf-scroll { position: absolute; inset: 0; overflow: auto; touch-action: pan-x pan-y; }
+        .pdf-pages { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; width: max-content; min-width: 100%; }
+        .pdf-page { position: relative; background: #fff; box-shadow: 0 2px 12px rgba(0, 0, 0, .3); }
+        .pdf-page canvas { display: block; }
+        .pdf-page img { display: block; }
+        /* pdf.js text layer: invisible text over the page, so it can be selected and copied */
+        .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; text-align: initial; opacity: 1; forced-color-adjust: none; transform-origin: 0 0; z-index: 2; }
+        .textLayer span, .textLayer br { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+        .textLayer ::selection { background: rgba(217, 158, 2, .35); }
+        .textLayer .endOfContent { display: block; position: absolute; inset: 100% 0 0; z-index: -1; cursor: default; user-select: none; }
+        .doc-note { position: absolute; left: 8px; right: 8px; bottom: 8px; padding: 6px 10px; border-radius: 8px; background: var(--menu); color: var(--muted); font-size: 12px; text-align: center; z-index: 3; }
 
         /* ---------- Table ---------- */
         .table-scroll { flex: 1; min-height: 0; overflow: auto; }
-        .table { min-width: 790px; }
+        .table { min-width: 1180px; }
         .grid {
             display: grid;
-            grid-template-columns: 40px minmax(150px, 1.1fr) minmax(150px, 1.05fr) minmax(160px, 1.5fr) 96px minmax(150px, 1.1fr) 44px;
+            grid-template-columns: 40px minmax(150px, 1.1fr) minmax(140px, 1fr) minmax(170px, 1.5fr) 84px minmax(140px, 1fr) 128px 140px 140px 44px;
             align-items: stretch;
         }
         .section-head {
@@ -181,7 +207,8 @@
         .cell.mono, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
         .row.removed { opacity: .5; }
         .row.removed .strike { text-decoration: line-through; }
-        .row.selected { background: color-mix(in srgb, var(--primary) 8%, transparent) !important; }
+        /* Selection is shown on the checkbox cell only, so a group's row tint stays visible */
+        .row.selected > .cell:first-child { background: color-mix(in srgb, var(--primary) 22%, transparent); box-shadow: inset 3px 0 0 var(--primary); }
 
         input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px; margin: 0; }
 
@@ -192,6 +219,11 @@
         .in:focus { box-shadow: inset 0 0 0 2px var(--primary); }
         textarea.in { display: block; overflow: hidden; padding-top: 15px; color: var(--text-2); }
         .in.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .in.date { font-size: 13px; padding: 8px 10px; }
+        .in.date::-webkit-calendar-picker-indicator { opacity: .6; cursor: pointer; }
+        .dates-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+        .dates-bar label { display: inline-flex; align-items: center; gap: 8px; }
+        .dates-bar input { height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--field); font-size: 13px; }
         .cell.invalid { background: var(--danger-soft); }
         .cell.invalid .in::placeholder { color: var(--danger); opacity: 1; }
         .qty-wrap { display: flex; flex-direction: column; align-items: stretch; width: 100%; height: 100%; }
@@ -287,6 +319,7 @@
             <div class="doc-tabs" id="doc-tabs"></div>
             <div class="viewer" id="viewer"><div class="empty">Loading…</div></div>
         </section>
+        <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize the document and table" tabindex="0"></div>
         <section class="pane items" aria-label="Assemblies">
             <div class="table-scroll" id="table-scroll">
                 <div class="loading" id="loading">Loading line items…</div>
@@ -322,12 +355,18 @@
         const EDITS_KEY = `po-assemblies:${PO_ROW_ID}:existing-edits`;
 
         const SAVE_DELAY_MS = 700;
-        const SAVED_FIELDS = ["partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "rejected", "groupMaster"];
+        const SAVED_FIELDS = ["partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "rejected", "groupMaster",
+            "currentStatus", "mfgStartDate", "dispatchDate"];
+        // Fields a new row sends with its first save, besides the one being typed
+        const NEW_ROW_FIELDS = ["project", "partOfGroup", "groupName", "currentStatus", "mfgStartDate", "dispatchDate"];
         const GROUP_COLORS = ["#5fb3a6", "#9a8bd6", "#d0927c", "#7fa6d9", "#c2a55e", "#8dbb7c", "#c98bb3", "#6fb7c9"];
 
         let rows = [];             // line-item records shown on the page
         let groups = [];           // { name, partNumber, existing, project }
         let projects = [];
+        let statuses = ["Mfg", "Sampling"];
+        // Last values set with "Set for all", used for rows added afterwards
+        const defaultDates = { mfgStartDate: "", dispatchDate: "" };
         let existing = [];         // assemblies already in the PO's projects
         let existingEdits = {};    // key -> { quantity?, partName?, remove? }, kept in the browser until publish
         const records = new Map(); // localId -> record (rows, removed rows and new group masters still to save)
@@ -382,6 +421,7 @@
             return register({
                 rowId: null, partNumber: "", partName: "", quantity: null,
                 partOfGroup: false, groupName: "", project: projects.length === 1 ? projects[0] : "",
+                currentStatus: statuses[0], ...defaultDates,
             });
         }
 
@@ -654,6 +694,9 @@
                 h("span", {}, "Assembly name"),
                 h("span", { class: "num" }, "Qty *"),
                 h("span", {}, withSelectAll ? "Project *" : "Project"),
+                h("span", {}, "Status"),
+                h("span", {}, "Mfg start date"),
+                h("span", {}, "Dispatch date"),
                 h("span", {}),
             );
         }
@@ -667,6 +710,7 @@
                     h("span", { class: "sep" }),
                     h("button", { class: "btn-outline", onclick: (e) => openParentMenu(e.currentTarget, [...selected].map((id) => records.get(id))) }, "Set parent", icon("chevron")),
                     h("button", { class: "btn-outline", onclick: (e) => openProjectMenu(e.currentTarget, [...selected].map((id) => records.get(id))) }, "Set project", icon("chevron")),
+                    h("button", { class: "btn-outline", onclick: (e) => openStatusMenu(e.currentTarget, [...selected].map((id) => records.get(id))) }, "Set status", icon("chevron")),
                     h("button", { class: "btn-tertiary danger", style: "height:32px", onclick: () => removeRows([...selected].map((id) => records.get(id))) }, "Remove"),
                 ), h("span", { class: "spacer" }),
                     h("button", { class: "btn-tertiary", style: "height:32px", onclick: () => { selected.clear(); render(); } }, "Clear selection"));
@@ -678,9 +722,23 @@
                     h("button", { class: "btn-outline", onclick: addRow }, icon("plus"), "Add row"),
                 );
             }
+            const targets = () => (selected.size ? [...selected].map((id) => records.get(id)) : newRows());
+            const dateField = (field, label) => h("label", {}, label, h("input", {
+                type: "date", value: selected.size ? "" : defaultDates[field], "aria-label": `${label} for ${selected.size ? "selected" : "all"} items`,
+                onchange: (e) => {
+                    const value = e.target.value;
+                    if (!selected.size) defaultDates[field] = value;
+                    targets().forEach((rec) => { rec[field] = value; markDirty(rec, [field]); });
+                    render();
+                },
+            }));
+            const datesBar = h("div", { class: "dates-bar" },
+                h("span", {}, selected.size ? `Set for ${selected.size} selected:` : "Set for all items:"),
+                dateField("mfgStartDate", "Mfg start date"),
+                dateField("dispatchDate", "Dispatch date"));
             const body = list.length ? list.map(renderNewRow)
                 : [h("div", { class: "empty-note" }, projects.length ? "No new items. Use Add row to add one." : "This PO has no projects yet, so nothing can be published.")];
-            return h("div", {}, head, columnHeader(true), ...body,
+            return h("div", {}, head, datesBar, columnHeader(true), ...body,
                 h("div", { class: "add-row-line" }, h("button", { onclick: addRow }, "+ Add row")));
         }
 
@@ -714,7 +772,7 @@
                     if (opts.numeric) value = value.trim() === "" ? null : (isNaN(Number(value)) ? rec[field] : Number(value));
                     rec[field] = value;
                     if (opts.multiline) autoGrow(e.target);
-                    markDirty(rec, rec.rowId ? [field] : [field, "project", "partOfGroup", "groupName"]);
+                    markDirty(rec, rec.rowId ? [field] : [field, ...NEW_ROW_FIELDS]);
                     refreshChrome();
                 },
                 onchange: () => { if (field === "partNumber") render(); },
@@ -738,9 +796,25 @@
                     class: `select${rec.project ? "" : " placeholder"}`, "aria-haspopup": "menu", "aria-expanded": "false",
                     onclick: (e) => openProjectMenu(e.currentTarget, [rec]),
                 }, h("span", { class: "label" }, rec.project || "Select"), icon("chevron", 14, "chev"))),
+                h("span", { class: "cell pad" }, h("button", {
+                    class: "select", "aria-haspopup": "menu", "aria-expanded": "false",
+                    onclick: (e) => openStatusMenu(e.currentTarget, [rec]),
+                }, h("span", { class: "label" }, rec.currentStatus || statuses[0]), icon("chevron", 14, "chev"))),
+                dateCell(rec, "mfgStartDate", "Mfg start date"),
+                dateCell(rec, "dispatchDate", "Dispatch date"),
                 h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove row", title: "Remove row", onclick: () => removeRows([rec]) }, icon("trash", 15))),
             );
         }
+
+        function dateCell(rec, field, label) {
+            return h("span", { class: "cell" }, h("input", {
+                type: "date", class: "in date", value: rec[field] || "", "aria-label": label, "data-focus": `${rec._localId}:${field}`,
+                onchange: (e) => { rec[field] = e.target.value; markDirty(rec, rec.rowId ? [field] : [field, ...NEW_ROW_FIELDS]); },
+            }));
+        }
+
+        // Status and dates belong to new assemblies; existing rows leave those columns empty
+        const emptyCells = () => [h("span", { class: "cell" }), h("span", { class: "cell" }), h("span", { class: "cell" })];
 
         function renderExistingSections() {
             const byProject = new Map(projects.map((p) => [lower(p), { name: p, items: [] }]));
@@ -791,6 +865,7 @@
                     }),
                     edit.quantity != null && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
                 h("span", { class: "cell text muted" }, item.project),
+                ...emptyCells(),
                 h("span", { class: "cell center" }, removed
                     ? h("button", { class: "undo", onclick: () => { editExisting(item.key, { remove: false }); render(); } }, "Undo")
                     : h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15))),
@@ -818,6 +893,7 @@
                     }),
                     rec.quantity !== item.quantity && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
                 h("span", { class: "cell text muted" }, item.project),
+                ...emptyCells(),
                 h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove this PO line", title: "Remove this PO line", onclick: () => removeRows([rec]) }, icon("trash", 15))),
             );
         }
@@ -952,6 +1028,15 @@
             });
         }
 
+        function openStatusMenu(anchor, targets) {
+            const current = targets.length === 1 ? (targets[0].currentStatus || statuses[0]) : null;
+            openMenu(anchor, () => statuses.map((st) => option(st, current === st, () => {
+                targets.forEach((rec) => { rec.currentStatus = st; markDirty(rec, ["currentStatus"]); });
+                closeMenu();
+                render();
+            })));
+        }
+
         function openProjectMenu(anchor, targets) {
             const current = targets.length === 1 ? targets[0].project : null;
             openMenu(anchor, () => {
@@ -1063,7 +1148,8 @@
             const tabs = [];
             po.attachmentIds.forEach((id, i) => tabs.push({
                 label: po.attachmentIds.length === 1 ? "Attachment" : `Attachment ${i + 1}`,
-                src: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
+                index: i,
+                preview: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
                 open: `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`,
             }));
             if (po.emailBody) tabs.push({ label: "Email", email: po.emailBody });
@@ -1075,27 +1161,244 @@
                 viewer.replaceChildren(h("div", { class: "empty" }, "This PO has no attachments or email body."));
                 return;
             }
+            let fullEmail = false;
             const show = (index) => {
                 const tab = tabs[index];
+                const tools = h("span", { class: "doc-tools" });
                 bar.replaceChildren(
                     ...tabs.map((t, i) => h("button", { class: `tab${i === index ? " active" : ""}`, onclick: () => show(i) }, t.label)),
+                    tools,
                     tab.open ? h("a", { class: "doc-open", href: tab.open, target: "_blank", rel: "noopener" }, "Open", icon("external", 13)) : "",
                 );
-                if (tab.src) {
-                    viewer.replaceChildren(h("iframe", { src: tab.src, title: tab.label, allow: "autoplay" }));
-                } else {
-                    const isHtml = /<[a-z][\s\S]*>/i.test(tab.email);
-                    const content = isHtml ? tab.email
-                        : `<pre style="white-space:pre-wrap;font:14px/1.5 -apple-system,system-ui,sans-serif">${tab.email.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
+                if (tab.email != null) {
+                    tools.append(h("button", { onclick: () => { fullEmail = !fullEmail; show(index); } }, fullEmail ? "Hide headers" : "Show full email"));
                     // Sandboxed with no scripts: the email is shown, never run
                     viewer.replaceChildren(h("iframe", {
-                        sandbox: "allow-popups allow-popups-to-escape-sandbox", title: "Email body",
-                        srcdoc: `<!doctype html><meta charset="utf-8"><base target="_blank"><body style="margin:16px;font:14px/1.5 -apple-system,system-ui,sans-serif;color:#18181b;background:#fff">${content}</body>`,
+                        sandbox: "allow-popups allow-popups-to-escape-sandbox", title: "Email",
+                        srcdoc: emailDocument(tab.email, !fullEmail),
                     }));
+                } else {
+                    showAttachment(tab, tools);
                 }
             };
             show(0);
         }
+
+        // ---------- Email ----------
+
+        const HEADER_LINE = /^\s*(-{2,}\s*(forwarded|original) message\s*-{2,}|(from|sent|date|to|cc|bcc|subject|reply-to)\s*:)/i;
+
+        function isHeaderBlock(text) {
+            const labels = text.match(/\b(from|sent|date|to|cc|bcc|subject)\s*:/gi) || [];
+            return HEADER_LINE.test(text) && labels.length >= 2 && text.length < 1200;
+        }
+
+        function emailDocument(raw, hideHeaders) {
+            const isHtml = /<(html|body|div|p|br|table|span|font|b|strong|ul|ol|li)\b[^>]*>/i.test(raw);
+            let content;
+            if (isHtml) {
+                const doc = new DOMParser().parseFromString(raw, "text/html");
+                doc.querySelectorAll("script, style, link, meta, title, base").forEach((el) => el.remove());
+                if (hideHeaders) {
+                    // Forwarded/reply header blocks (Gmail's "---- Forwarded message ----", Outlook's From/Sent/To)
+                    for (const el of doc.body.querySelectorAll("div, p, td, blockquote, span")) {
+                        if (el.isConnected && isHeaderBlock(el.textContent.trim())) el.remove();
+                    }
+                }
+                content = doc.body.innerHTML;
+            } else {
+                let lines = raw.replace(/\r\n?/g, "\n").split("\n");
+                if (hideHeaders) lines = lines.filter((line) => !HEADER_LINE.test(line));
+                const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+                content = `<div style="white-space:pre-wrap">${text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</div>`;
+            }
+            return `<!doctype html><meta charset="utf-8"><base target="_blank"><style>
+                body{margin:20px;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#1f1f23;background:#fff;word-wrap:break-word}
+                table{border-collapse:collapse;max-width:100%}td,th{padding:2px 6px;vertical-align:top}
+                img{max-width:100%;height:auto}blockquote{margin:8px 0;padding-left:12px;border-left:2px solid #ddd;color:#555}
+                p{margin:0 0 10px}</style><body>${content}</body>`;
+        }
+
+        // ---------- Attachments: rendered here so they can be zoomed and copied from ----------
+
+        if (window.pdfjsLib) {
+            pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        }
+        const attachmentCache = new Map(); // index -> Promise<{ type, pdf?, url? }>
+
+        function loadAttachment(index) {
+            if (!attachmentCache.has(index)) {
+                attachmentCache.set(index, (async () => {
+                    const res = await fetch(`${API}/attachments/${index}`);
+                    if (!res.ok) {
+                        const body = await res.json().catch(() => ({}));
+                        throw new Error(body.error || `HTTP ${res.status}`);
+                    }
+                    const type = (res.headers.get("content-type") || "").split(";")[0];
+                    const data = await res.arrayBuffer();
+                    if (type === "application/pdf" && window.pdfjsLib) {
+                        return { type: "pdf", pdf: await pdfjsLib.getDocument({ data }).promise };
+                    }
+                    if (type.startsWith("image/")) return { type: "image", url: URL.createObjectURL(new Blob([data], { type })) };
+                    throw new Error(`Can't show ${type || "this file"} here`);
+                })());
+                attachmentCache.get(index).catch(() => attachmentCache.delete(index));
+            }
+            return attachmentCache.get(index);
+        }
+
+        let viewToken = 0;
+
+        async function showAttachment(tab, tools) {
+            const token = ++viewToken;
+            const viewer = $("viewer");
+            viewer.replaceChildren(h("div", { class: "empty" }, "Loading attachment…"));
+            let file;
+            try {
+                file = await loadAttachment(tab.index);
+            } catch (err) {
+                if (token !== viewToken) return;
+                // Fall back to Google's own viewer (no zoom or copy from here)
+                viewer.replaceChildren(h("iframe", { src: tab.preview, title: tab.label }),
+                    h("div", { class: "doc-note" }, `Showing Google's viewer: ${err.message}`));
+                return;
+            }
+            if (token !== viewToken) return;
+
+            const scroll = h("div", { class: "pdf-scroll" });
+            const pages = h("div", { class: "pdf-pages" });
+            scroll.append(pages);
+            viewer.replaceChildren(scroll);
+
+            // zoom = 1 fits the page width to the pane
+            let zoom = 1, rendered = 0, fitWidth = 0, renderTimer = null;
+            const pct = h("button", { class: "pct", title: "Fit to width", onclick: () => setZoom(1) }, "100%");
+            tools.append(
+                h("button", { "aria-label": "Zoom out", title: "Zoom out", onclick: () => setZoom(zoom / 1.25) }, "−"),
+                pct,
+                h("button", { "aria-label": "Zoom in", title: "Zoom in", onclick: () => setZoom(zoom * 1.25) }, "+"),
+            );
+
+            const paneWidth = () => Math.max(200, scroll.clientWidth - 32);
+
+            async function draw() {
+                const width = paneWidth() * zoom;
+                pages.style.zoom = "";
+                if (file.type === "image") {
+                    pages.replaceChildren(h("div", { class: "pdf-page" }, h("img", { src: file.url, alt: tab.label, style: `width:${width}px` })));
+                } else {
+                    const out = [];
+                    for (let n = 1; n <= file.pdf.numPages; n++) {
+                        const page = await file.pdf.getPage(n);
+                        const base = page.getViewport({ scale: 1 });
+                        const viewport = page.getViewport({ scale: width / base.width });
+                        const ratio = window.devicePixelRatio || 1;
+                        const canvas = h("canvas", { width: Math.floor(viewport.width * ratio), height: Math.floor(viewport.height * ratio) });
+                        canvas.style.width = `${viewport.width}px`;
+                        canvas.style.height = `${viewport.height}px`;
+                        const text = h("div", { class: "textLayer" });
+                        text.style.setProperty("--scale-factor", viewport.scale);
+                        const wrap = h("div", { class: "pdf-page", style: `width:${viewport.width}px;height:${viewport.height}px` }, canvas, text);
+                        out.push(wrap);
+                        await page.render({ canvasContext: canvas.getContext("2d"), viewport, transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise;
+                        pdfjsLib.renderTextLayer({ textContentSource: await page.getTextContent(), container: text, viewport, textDivs: [] });
+                    }
+                    pages.replaceChildren(...out);
+                }
+                rendered = zoom;
+                fitWidth = paneWidth();
+            }
+
+            // Zoom around a point (the pinch centre or the pane centre), showing the change at once with
+            // CSS zoom and re-rendering sharply once the gesture settles
+            function setZoom(next, cx = scroll.clientWidth / 2, cy = scroll.clientHeight / 2) {
+                if (!rendered) return;
+                next = Math.min(6, Math.max(0.3, next));
+                const x = scroll.scrollLeft + cx, y = scroll.scrollTop + cy;
+                const factor = next / zoom;
+                zoom = next;
+                pct.textContent = `${Math.round(zoom * 100)}%`;
+                pages.style.zoom = String(zoom / rendered);
+                scroll.scrollLeft = x * factor - cx;
+                scroll.scrollTop = y * factor - cy;
+                clearTimeout(renderTimer);
+                renderTimer = setTimeout(async () => {
+                    const left = scroll.scrollLeft, top = scroll.scrollTop;
+                    await draw();
+                    scroll.scrollLeft = left;
+                    scroll.scrollTop = top;
+                }, 180);
+            }
+
+            // Trackpad pinch (Chrome, Edge, Firefox send it as ctrl + wheel), and Ctrl/Cmd + scroll
+            scroll.addEventListener("wheel", (e) => {
+                if (!e.ctrlKey && !e.metaKey) return;
+                e.preventDefault();
+                const r = scroll.getBoundingClientRect();
+                // Trackpads send small steps, a mouse wheel big ones: cap each step at about 25%
+                const step = Math.max(-25, Math.min(25, e.deltaY));
+                setZoom(zoom * Math.exp(-step * 0.01), e.clientX - r.left, e.clientY - r.top);
+            }, { passive: false });
+            // Safari trackpad pinch
+            let gestureStart = 1;
+            scroll.addEventListener("gesturestart", (e) => { e.preventDefault(); gestureStart = zoom; });
+            scroll.addEventListener("gesturechange", (e) => {
+                e.preventDefault();
+                const r = scroll.getBoundingClientRect();
+                setZoom(gestureStart * e.scale, e.clientX - r.left, e.clientY - r.top);
+            });
+            // Touch screens: two-finger pinch
+            let pinch = null;
+            const spread = (t) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+            scroll.addEventListener("touchstart", (e) => { if (e.touches.length === 2) pinch = { d: spread(e.touches), z: zoom }; }, { passive: true });
+            scroll.addEventListener("touchmove", (e) => {
+                if (!pinch || e.touches.length !== 2) return;
+                e.preventDefault();
+                const r = scroll.getBoundingClientRect();
+                const cx = (e.touches[0].clientX + e.touches[1].clientX) / 2 - r.left;
+                const cy = (e.touches[0].clientY + e.touches[1].clientY) / 2 - r.top;
+                setZoom(pinch.z * spread(e.touches) / pinch.d, cx, cy);
+            }, { passive: false });
+            scroll.addEventListener("touchend", () => { pinch = null; });
+
+            // Re-fit when the pane is resized (splitter, window)
+            new ResizeObserver(() => {
+                if (token === viewToken && rendered && Math.abs(paneWidth() - fitWidth) > 4) setZoom(zoom);
+            }).observe(scroll);
+
+            await draw();
+        }
+
+        // ---------- Splitter (width lasts until reload) ----------
+
+        (function splitter() {
+            const handle = $("splitter");
+            const doc = document.querySelector(".doc");
+            const total = () => document.querySelector("main").clientWidth - 48 - handle.offsetWidth;
+            const setWidth = (px) => {
+                const width = Math.min(Math.max(px, 260), total() - 420);
+                doc.style.flex = `0 0 ${width}px`;
+            };
+            let startX = 0, startWidth = 0;
+            handle.addEventListener("pointerdown", (e) => {
+                startX = e.clientX;
+                startWidth = doc.getBoundingClientRect().width;
+                handle.setPointerCapture(e.pointerId);
+                document.body.classList.add("resizing");
+            });
+            handle.addEventListener("pointermove", (e) => {
+                if (handle.hasPointerCapture(e.pointerId)) setWidth(startWidth + e.clientX - startX);
+            });
+            const stop = (e) => { if (handle.hasPointerCapture(e.pointerId)) handle.releasePointerCapture(e.pointerId); document.body.classList.remove("resizing"); };
+            handle.addEventListener("pointerup", stop);
+            handle.addEventListener("pointercancel", stop);
+            handle.addEventListener("dblclick", () => { doc.style.flex = ""; });
+            handle.addEventListener("keydown", (e) => {
+                if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                setWidth(doc.getBoundingClientRect().width + (e.key === "ArrowLeft" ? -32 : 32));
+                e.preventDefault();
+            });
+        })();
 
         // ---------- Loading ----------
 
@@ -1105,6 +1408,7 @@
             if (!res.ok) throw new Error(body.error || `Could not load line items (HTTP ${res.status})`);
 
             projects = body.projects;
+            statuses = body.statuses || statuses;
             groups = body.groups.map((g) => ({ name: g.name, partNumber: g.partNumber, existing: g.existing, project: g.project }));
             existing = body.existing || [];
             loadEdits();
@@ -1123,6 +1427,11 @@
                     markDirty(rec, ["project"]);
                 }
                 rows.push(rec);
+            }
+            // "Set for all items" starts from the date every row already shares, if they do
+            for (const field of ["mfgStartDate", "dispatchDate"]) {
+                const values = new Set(rows.map((r) => r[field] || ""));
+                defaultDates[field] = values.size === 1 ? [...values][0] : "";
             }
             if (!rows.length && !existing.length && projects.length) rows.push(newRecord());
 

@@ -21,7 +21,10 @@ class FakeGlide:
     def __init__(self, line_items, projects="Proj A, Proj B"):
         self.tables = {
             pa.LINE_ITEMS_TABLE: line_items,
-            pa.PO_TABLE: [{"$rowID": PO, pa.PO_PROJECTS: projects, pa.PO_NUMBER: "PO-77", pa.PO_CUSTOMER: "Acme"}],
+            pa.PO_TABLE: [{
+                "$rowID": PO, pa.PO_PROJECTS: projects, pa.PO_NUMBER: "PO-77", pa.PO_CUSTOMER: "Acme",
+                pa.PO_ATTACHMENT_IDS: "g1, g2", pa.PO_BODY: "<p>Please see PO</p>",
+            }],
             pa.ASSEMBLIES_TABLE: [],
             pa.CHILD_PARTS_TABLE: [],
             pa.DRAWINGS_TABLE: [],
@@ -46,6 +49,9 @@ class FakeGlide:
                 row_id = f"new-{self.next_id}"
                 table.append({"$rowID": row_id, **m["columnValues"]})
                 results.append({"rowID": row_id})
+            elif m["kind"] == "delete-row":
+                table[:] = [r for r in table if r["$rowID"] != m["rowID"]]
+                results.append({})
             else:
                 row = next(r for r in table if r["$rowID"] == m["rowID"])
                 row.update(m["columnValues"])
@@ -109,7 +115,12 @@ def test_get_returns_open_rows_groups_and_projects():
     assert res.status_code == 200
     body = res.json()
     assert [r["rowId"] for r in body["rows"]] == ["a", "b", "c"]
-    assert body["groups"] == [{"name": "Fasteners", "partNumber": "WZ_Fasteners_061026", "rowId": "m", "project": ""}]
+    assert body["groups"] == [
+        {"name": "Fasteners", "partNumber": "WZ_Fasteners_061026", "rowId": "m", "project": "", "existing": False}
+    ]
+    assert body["po"]["attachmentIds"] == ["g1", "g2"]
+    assert body["po"]["emailBody"] == "<p>Please see PO</p>"
+    assert body["existing"] == []
     assert body["projects"] == ["Proj A", "Proj B"]
     assert body["po"]["poNumber"] == "PO-77"
     assert body["submittedCount"] == 1
@@ -171,6 +182,7 @@ def test_submit_creates_assemblies_and_child_parts():
     assert res.status_code == 200, res.text
     assert res.json() == {
         "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
+        "quantityUpdates": 0, "removals": 0,
         "drawingsCreated": 4, "drawingsUpdated": 0, "emailSent": False, "warnings": [],
     }
 
@@ -180,6 +192,7 @@ def test_submit_creates_assemblies_and_child_parts():
         ("WZ_Fasteners_061026", True, "m"),
     ]
     assert assemblies[0][pa.ASM["project"]] == "Proj A"
+    assert assemblies[0][pa.ASM["quantity"]] == 2 and assemblies[1][pa.ASM["quantity"]] == 1
 
     children = glide.tables[pa.CHILD_PARTS_TABLE]
     assert [(c[pa.CP["drawingNumber"]], c[pa.CP["parentDrawingNumber"]], c[pa.CP["quantity"]], c[pa.CP["itemNumber"]])
@@ -288,3 +301,94 @@ def test_placeholder_pdf_handles_non_latin_text():
     data = pa.placeholder_pdf("Ø12-A/3", "Bracket \u2264 5mm")
     assert data.startswith(b"%PDF")
     assert pa.safe_file_name("Ø12-A/3") == "Ø12-A-3"
+
+
+def with_existing(glide):
+    """Proj A already has standalone E-1 (drawing qty 5) and group KIT with child K-1 (qty 3)."""
+    glide.tables[pa.ASSEMBLIES_TABLE] += [
+        {"$rowID": "asm-e1", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "E-1", pa.ASM["partName"]: "Existing one",
+         pa.ASM["packageAssembly"]: False, pa.ASM["currentStatus"]: "Mfg", pa.ASM["quantity"]: 5},
+        {"$rowID": "asm-kit", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "KIT-1", pa.ASM["partName"]: "Kit",
+         pa.ASM["packageAssembly"]: True},
+        {"$rowID": "asm-old", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "OLD", pa.ASM["currentStatus"]: "Cancelled"},
+        {"$rowID": "asm-other", pa.ASM["project"]: "Proj Z", pa.ASM["partNumber"]: "Z-1"},
+    ]
+    glide.tables[pa.CHILD_PARTS_TABLE] += [
+        {"$rowID": "cp-k1", pa.CP["project"]: "Proj A", pa.CP["parentDrawingNumber"]: "KIT-1", pa.CP["drawingNumber"]: "K-1",
+         pa.CP["partNumber"]: "K-1", pa.CP["quantity"]: "3", pa.CP["description"]: "Kit part"},
+        {"$rowID": "cp-bom", pa.CP["project"]: "Proj A", pa.CP["parentDrawingNumber"]: "SOME-DRAWING", pa.CP["drawingNumber"]: "X"},
+    ]
+    glide.tables[pa.DRAWINGS_TABLE] += [
+        {"$rowID": "dw-e1", pa.DWG["project"]: "Proj A", pa.DWG["partNumber"]: "E-1", pa.DWG["quantity"]: 4},
+        {"$rowID": "dw-k1", pa.DWG["project"]: "Proj A", pa.DWG["partNumber"]: "K-1", pa.DWG["quantity"]: 3},
+    ]
+    return glide
+
+
+def test_get_lists_existing_assemblies_and_groups():
+    body = client_for(with_existing(FakeGlide(sample_items()))).get(f"/po-assemblies/{PO}").json()
+    assert body["existing"] == [
+        {"key": "a:asm-e1", "kind": "assembly", "project": "Proj A", "partNumber": "E-1", "partName": "Existing one", "quantity": 5, "parent": ""},
+        {"key": "c:cp-k1", "kind": "child", "project": "Proj A", "partNumber": "K-1", "partName": "Kit part", "quantity": 3, "parent": "Kit"},
+    ]
+    assert {"name": "Kit", "partNumber": "KIT-1", "rowId": "asm-kit", "project": "Proj A", "existing": True} in body["groups"]
+
+
+def test_po_line_matching_an_existing_assembly_updates_its_quantity():
+    items = [line_item("x", partNumber="e-1", partName="Existing one", quantity=8, project="Proj A")]
+    glide = with_existing(FakeGlide(items))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 200, res.text
+    assert res.json()["quantityUpdates"] == 1
+    assert res.json()["standaloneAssemblies"] == 0
+    assert len(glide.tables[pa.ASSEMBLIES_TABLE]) == 4  # nothing created
+    drawings = {d["$rowID"]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
+    assert drawings["dw-e1"][pa.DWG["quantity"]] == 8
+    assert {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}["asm-e1"][pa.ASM["quantity"]] == 8
+    assert glide.tables[pa.LINE_ITEMS_TABLE][0][pa.LI["addedAsAssembly"]] is True
+
+
+def test_group_matching_an_existing_group_adds_children_to_it():
+    items = [line_item("x", partNumber="K-2", partName="New kit part", quantity=4, partOfGroup=True, groupName="kit", project="Proj A")]
+    glide = with_existing(FakeGlide(items))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 200, res.text
+    assert res.json()["groupAssemblies"] == 0 and res.json()["childParts"] == 1
+    child = glide.tables[pa.CHILD_PARTS_TABLE][-1]
+    assert child[pa.CP["parentDrawingNumber"]] == "KIT-1"
+    assert child[pa.CP["itemNumber"]] == 2  # after the existing child
+    drawing = glide.tables[pa.DRAWINGS_TABLE][-1]
+    assert drawing[pa.DWG["partNumber"]] == "K-2" and drawing[pa.DWG["assemblyRowId"]] == "asm-kit"
+
+
+def test_existing_changes_update_quantity_name_and_remove():
+    glide = with_existing(FakeGlide([]))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
+        {"key": "a:asm-e1", "quantity": "7", "partName": "Renamed"},
+        {"key": "c:cp-k1", "remove": True},
+        {"key": "a:unknown", "remove": True},
+    ]})
+    assert res.status_code == 200, res.text
+    assert res.json()["quantityUpdates"] == 1 and res.json()["removals"] == 1
+    asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    assert asm["asm-e1"][pa.ASM["partName"]] == "Renamed"
+    assert asm["asm-e1"][pa.ASM["quantity"]] == 7
+    drawings = {d["$rowID"]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
+    assert drawings["dw-e1"][pa.DWG["quantity"]] == 7
+    assert drawings["dw-k1"][pa.DWG["currentStatus"]] == "Cancelled"
+    assert "cp-k1" not in {c["$rowID"] for c in glide.tables[pa.CHILD_PARTS_TABLE]}
+
+
+def test_existing_change_with_bad_quantity_is_rejected():
+    glide = with_existing(FakeGlide([]))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [{"key": "a:asm-e1", "quantity": "-1"}]})
+    assert res.status_code == 400
+    assert res.json()["rowErrors"][0]["rowId"] == "a:asm-e1"
+    assert glide.calls == []
+
+
+def test_quantity_is_required_for_standalone_items():
+    items = [line_item("x", partNumber="S-1", project="Proj A")]
+    res = client_for(FakeGlide(items)).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 400
+    assert res.json()["rowErrors"] == [{"rowId": "x", "message": "Quantity is required"}]

@@ -193,7 +193,8 @@
     <script>
         const params = new URLSearchParams(location.search);
         const PO_ROW_ID = params.get("po") || params.get("poRowID") || params.get("rowID");
-        const API_BASE = (params.get("api") || "https://dev-ocr-table-extractor.onrender.com").replace(/\/$/, "");
+        // The PO Assemblies Render service (backend/po_app.py); ?api= overrides it for testing
+        const API_BASE = (params.get("api") || "https://po-assemblies.onrender.com").replace(/\/$/, "");
         const API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}`;
 
         const STANDALONE = "Standalone";

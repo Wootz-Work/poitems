@@ -4,193 +4,312 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PO Assemblies</title>
-    <link rel="stylesheet" type="text/css"
-        href="https://cdn.jsdelivr.net/npm/handsontable@12.1.0/dist/handsontable.full.min.css" />
-    <script src="https://cdn.jsdelivr.net/npm/handsontable@12.1.0/dist/handsontable.full.min.js"></script>
+    <title>Add assemblies</title>
     <style>
         :root {
-            --bg: #f6f7f9;
-            --panel: #ffffff;
-            --text: #1f2937;
-            --muted: #6b7280;
-            --border: #e5e7eb;
-            --accent: #2563eb;
-            --accent-hover: #1d4ed8;
-            --danger: #b91c1c;
-            --danger-bg: #fef2f2;
-            --ok: #047857;
-            --ok-bg: #ecfdf5;
-            --warn-bg: #fffbeb;
+            --bg: #0f0f10;
+            --panel: #18181b;
+            --panel-2: #1d1d21;
+            --field: #1f1f23;
+            --menu: #232327;
+            --line: #2c2c31;
+            --line-strong: #34343a;
+            --text: #ededef;
+            --text-2: #d4d4d8;
+            --muted: #a1a1aa;
+            --faint: #85858e;
+            --icon: #6b6b74;
+            --primary: #d99e02;
+            --primary-text: #1a1405;
+            --primary-soft: #e8b737;
+            --danger: #f87171;
+            --danger-soft: rgba(248, 113, 113, .08);
+            --ok: #4ade80;
+            --hover: #2c2c31;
+            --viewer: #0b0b0c;
+            --shadow: 0 18px 44px rgba(0, 0, 0, .6);
+            --tint-alpha: .055;
+            color-scheme: dark;
+        }
+
+        @media (prefers-color-scheme: light) {
+            :root {
+                --bg: #f5f6f8;
+                --panel: #ffffff;
+                --panel-2: #f7f7f9;
+                --field: #ffffff;
+                --menu: #ffffff;
+                --line: #e7e7ea;
+                --line-strong: #dcdce0;
+                --text: #18181b;
+                --text-2: #3f3f46;
+                --muted: #5f5f68;
+                --faint: #71717a;
+                --icon: #8a8a93;
+                --primary-soft: #a87700;
+                --danger: #c62828;
+                --danger-soft: rgba(220, 38, 38, .06);
+                --ok: #16a34a;
+                --hover: #f0f0f3;
+                --viewer: #e9ebef;
+                --shadow: 0 16px 40px rgba(24, 24, 27, .16);
+                --tint-alpha: .08;
+                color-scheme: light;
+            }
         }
 
         * { box-sizing: border-box; }
 
+        html, body { height: 100%; }
+
         body {
             margin: 0;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             background: var(--bg);
             color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
             font-size: 14px;
+            display: flex;
+            flex-direction: column;
         }
 
+        button, input, textarea { font: inherit; color: inherit; }
+        button { cursor: pointer; }
+        button:disabled { cursor: not-allowed; }
+        a { color: var(--primary-soft); }
+
+        /* ---------- Header ---------- */
         header {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
-            gap: 12px;
-            padding: 14px 16px;
-            background: var(--panel);
-            border-bottom: 1px solid var(--border);
-            position: sticky;
-            top: 0;
-            z-index: 200;
+            gap: 12px 16px;
+            padding: 16px 24px;
+            border-bottom: 1px solid var(--line);
+        }
+        .title { flex: 1 1 300px; min-width: 0; }
+        h1 { margin: 0; font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+        .subtitle { margin: 4px 0 0; font-size: 13px; color: var(--muted); }
+        .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .missing {
+            border: none; background: none; padding: 0 6px; height: 40px;
+            font-size: 13px; color: var(--danger);
+        }
+        .missing:hover { text-decoration: underline; }
+        .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); padding: 0 6px; white-space: nowrap; }
+        .status .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); }
+        .status.saved .dot { background: var(--ok); }
+        .status.saving .dot { background: var(--primary); }
+        .status.error { color: var(--danger); }
+        .status.error .dot { background: var(--danger); }
+        .btn-tertiary { height: 40px; padding: 0 12px; border: none; background: transparent; color: var(--text-2); border-radius: 8px; }
+        .btn-tertiary:hover:not(:disabled) { background: var(--hover); }
+        .btn-primary {
+            height: 40px; padding: 0 18px; border: none; border-radius: 8px;
+            background: var(--primary); color: var(--primary-text); font-weight: 600;
+        }
+        .btn-primary:hover:not(:disabled) { filter: brightness(1.07); }
+        .btn-primary:disabled { opacity: .45; }
+        .btn-outline {
+            height: 32px; padding: 0 12px; display: inline-flex; align-items: center; gap: 6px;
+            border: 1px solid var(--line-strong); background: transparent; border-radius: 8px;
+        }
+        .btn-outline:hover:not(:disabled) { background: var(--hover); }
+
+        /* ---------- Layout ---------- */
+        main {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            gap: 16px;
+            padding: 16px 24px 24px;
+        }
+        .pane { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; min-width: 0; }
+        .doc { flex: 4 1 0; display: flex; flex-direction: column; }
+        .items { flex: 6 1 0; display: flex; flex-direction: column; }
+
+        @media (max-width: 1000px) {
+            body { height: auto; }
+            main { flex-direction: column; }
+            .doc { flex: none; height: 60vh; }
+            .items { flex: none; }
         }
 
-        header h1 { font-size: 17px; margin: 0; }
-        .po-meta { color: var(--muted); }
-        .spacer { flex: 1; }
+        /* ---------- Document viewer ---------- */
+        .doc-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
+        .tab { height: 32px; padding: 0 12px; border: none; border-radius: 7px; background: transparent; color: var(--muted); font-size: 13px; }
+        .tab:hover { color: var(--text); }
+        .tab.active { background: var(--hover); color: var(--text); }
+        .doc-open { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 0 8px; font-size: 13px; text-decoration: none; }
+        .viewer { flex: 1; min-height: 0; background: var(--viewer); position: relative; }
+        .viewer iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+        .viewer .empty { padding: 40px 24px; text-align: center; color: var(--muted); }
 
-        .save-status {
-            font-size: 12px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            background: var(--bg);
-            color: var(--muted);
-            white-space: nowrap;
+        /* ---------- Table ---------- */
+        .table-scroll { flex: 1; min-height: 0; overflow: auto; }
+        .table { min-width: 790px; }
+        .grid {
+            display: grid;
+            grid-template-columns: 40px minmax(150px, 1.1fr) minmax(150px, 1.05fr) minmax(160px, 1.5fr) 96px minmax(150px, 1.1fr) 44px;
+            align-items: stretch;
         }
-        .save-status.saved { color: var(--ok); background: var(--ok-bg); }
-        .save-status.error { color: var(--danger); background: var(--danger-bg); }
-
-        button {
-            font: inherit;
-            border-radius: 6px;
-            padding: 7px 14px;
-            cursor: pointer;
-            border: 1px solid var(--border);
-            background: var(--panel);
-            color: var(--text);
+        .section-head {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+            min-height: 56px; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--line);
         }
-        button:hover:not(:disabled) { background: var(--bg); }
-        button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-        button.primary:hover:not(:disabled) { background: var(--accent-hover); }
-        button:disabled { opacity: .55; cursor: not-allowed; }
-
-        main { padding: 16px; }
-
-        .banner {
-            display: none;
-            padding: 10px 14px;
-            border-radius: 6px;
-            margin-bottom: 12px;
-            white-space: pre-line;
+        .section-head .name { font-weight: 600; }
+        .section-head .count { font-size: 13px; color: var(--muted); }
+        .section-head .note { font-size: 12px; color: var(--faint); }
+        .section-head .spacer { flex: 1; }
+        .existing-head { padding-top: 22px; }
+        .colhead {
+            position: sticky; top: 0; z-index: 2;
+            background: var(--panel-2); border-bottom: 1px solid var(--line-strong);
+            font-size: 12px; font-weight: 500; color: var(--muted);
         }
-        .banner.show { display: block; }
-        .banner.error { background: var(--danger-bg); color: var(--danger); border: 1px solid #fecaca; }
-        .banner.ok { background: var(--ok-bg); color: var(--ok); border: 1px solid #a7f3d0; }
-        .banner.info { background: var(--warn-bg); color: #92400e; border: 1px solid #fde68a; }
+        .colhead > span { display: flex; flex-direction: column; justify-content: center; padding: 8px 12px; border-right: 1px solid var(--line); }
+        .colhead > span:last-child { border-right: none; }
+        .colhead small { font-size: 11px; font-weight: 400; color: var(--faint); }
+        .colhead .num { align-items: flex-end; }
 
-        .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+        .row { min-height: 52px; border-bottom: 1px solid var(--line); }
+        .row > .cell { display: flex; align-items: center; border-right: 1px solid var(--line); min-width: 0; }
+        .row > .cell:last-child { border-right: none; }
+        .cell.center { justify-content: center; }
+        .cell.pad { padding: 6px 8px; }
+        .cell.text { padding: 8px 12px; }
+        .cell.muted { color: var(--muted); }
+        .cell.mono, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+        .row.removed { opacity: .5; }
+        .row.removed .strike { text-decoration: line-through; }
+        .row.selected { background: color-mix(in srgb, var(--primary) 8%, transparent) !important; }
 
-        #grid-wrap {
-            background: var(--panel);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-        }
-        #loading { padding: 40px; text-align: center; color: var(--muted); }
+        input[type="checkbox"] { accent-color: var(--primary); width: 15px; height: 15px; margin: 0; }
 
-        /* Grid */
-        .handsontable td.group-row { background: #f5f8ff; }
-        .handsontable td.parent-standalone { color: var(--muted); }
-        .handsontable td.parent-group { color: var(--accent); font-weight: 500; }
-        .handsontable td.has-error { background: var(--danger-bg) !important; }
-        .handsontable td.issue-cell { color: var(--danger); font-size: 12px; white-space: normal; }
+        .in {
+            width: 100%; height: 100%; min-height: 50px; border: none; outline: none; background: transparent;
+            padding: 8px 12px; resize: none; line-height: 1.35;
+        }
+        .in:focus { box-shadow: inset 0 0 0 2px var(--primary); }
+        textarea.in { display: block; overflow: hidden; padding-top: 15px; color: var(--text-2); }
+        .in.num { text-align: right; font-variant-numeric: tabular-nums; }
+        .cell.invalid { background: var(--danger-soft); }
+        .cell.invalid .in::placeholder { color: var(--danger); opacity: 1; }
+        .qty-wrap { display: flex; flex-direction: column; align-items: stretch; width: 100%; height: 100%; }
+        .qty-wrap .in { min-height: 0; flex: 1; }
+        .was { font-size: 11px; color: var(--faint); text-align: right; padding: 0 12px 6px; margin-top: -8px; }
 
-        /* Modal */
-        .modal-backdrop {
-            display: none;
-            position: fixed;
-            inset: 0;
-            background: rgba(17, 24, 39, .4);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-            padding: 16px;
+        .select {
+            width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+            border: 1px solid var(--line-strong); background: var(--field); border-radius: 7px; text-align: left; min-width: 0;
         }
-        .modal-backdrop.show { display: flex; }
-        .modal {
-            background: var(--panel);
-            border-radius: 10px;
-            padding: 20px;
-            width: 100%;
-            max-width: 420px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, .2);
+        .select:hover:not(:disabled) { border-color: var(--icon); }
+        .select[aria-expanded="true"] { border-color: var(--icon); }
+        .select .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .select.placeholder { color: var(--muted); }
+        .select.invalid { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 60%, transparent); }
+        .select:disabled { background: transparent; border-color: transparent; color: var(--muted); padding-left: 4px; }
+        .select:disabled .chev { display: none !important; }
+        .dot-g { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+
+        .icon-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--icon); border-radius: 6px; }
+        .icon-btn:hover { background: var(--hover); color: var(--text); }
+        .undo { height: 28px; padding: 0 6px; border: none; background: transparent; color: var(--primary-soft); font-size: 12px; border-radius: 6px; }
+
+        .bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+        .bulk .sep { width: 1px; height: 20px; background: var(--line-strong); }
+        .bulk .danger { color: var(--danger); }
+
+        .add-row-line { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+        .add-row-line button { height: 32px; border: none; background: none; color: var(--muted); padding: 0 6px; border-radius: 6px; }
+        .add-row-line button:hover { color: var(--text); background: var(--hover); }
+        .footer { padding: 14px 16px; border-top: 1px solid var(--line-strong); font-size: 13px; color: var(--muted); }
+        .empty-note { padding: 18px 16px; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
+
+        /* ---------- Menus, dialogs, toasts ---------- */
+        .menu {
+            position: fixed; z-index: 100; min-width: 220px; max-width: 320px; max-height: 360px; overflow: auto;
+            background: var(--menu); border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: var(--shadow); padding: 6px;
         }
-        .modal h2 { font-size: 16px; margin: 0 0 6px; }
-        .modal p { color: var(--muted); margin: 0 0 14px; }
-        .modal input {
-            width: 100%;
-            font: inherit;
-            padding: 8px 10px;
-            border: 1px solid var(--border);
-            border-radius: 6px;
-            margin-bottom: 6px;
+        .menu[hidden] { display: none; }
+        .menu .opt {
+            width: 100%; min-height: 40px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
+            border: none; border-radius: 8px; background: transparent; text-align: left;
         }
-        .modal .field-error { color: var(--danger); font-size: 12px; min-height: 16px; }
-        .modal .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
-        .modal ul { margin: 0 0 4px; padding-left: 18px; }
+        .menu .opt:hover, .menu .opt:focus-visible { background: var(--hover); outline: none; }
+        .menu .opt .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .menu .opt .meta { font-size: 12px; color: var(--faint); }
+        .menu .opt .check { width: 15px; flex: none; }
+        .menu .divider { height: 1px; background: var(--line-strong); margin: 4px; }
+        .menu .heading { padding: 8px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+        .menu .create { display: flex; gap: 6px; padding: 4px; }
+        .menu .create input { flex: 1; min-width: 0; height: 36px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--field); outline: none; }
+        .menu .create input:focus { border-color: var(--primary); }
+        .menu .create button { height: 36px; padding: 0 12px; border: none; border-radius: 8px; background: var(--primary); color: var(--primary-text); font-weight: 600; }
+
+        .backdrop { position: fixed; inset: 0; z-index: 200; display: none; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, .5); }
+        .backdrop.show { display: flex; }
+        .dialog { width: 100%; max-width: 440px; background: var(--menu); border: 1px solid var(--line-strong); border-radius: 12px; padding: 20px; box-shadow: var(--shadow); }
+        .dialog h2 { margin: 0 0 10px; font-size: 16px; }
+        .dialog ul { margin: 0 0 12px; padding-left: 18px; color: var(--text-2); }
+        .dialog p { margin: 0; color: var(--muted); font-size: 13px; }
+        .dialog .row-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+        .toast {
+            position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 300;
+            display: none; align-items: center; gap: 12px; max-width: calc(100vw - 32px);
+            padding: 10px 12px 10px 16px; border-radius: 10px; background: var(--menu); border: 1px solid var(--line-strong);
+            box-shadow: var(--shadow); white-space: pre-line;
+        }
+        .toast.show { display: flex; }
+        .toast.error { border-color: color-mix(in srgb, var(--danger) 60%, transparent); }
+        .toast button { border: none; background: none; color: var(--primary-soft); font-weight: 600; padding: 4px 6px; }
+
+        .loading { padding: 40px; text-align: center; color: var(--muted); }
     </style>
 </head>
 
 <body>
     <header>
-        <h1>PO Assemblies</h1>
-        <span class="po-meta" id="po-meta"></span>
-        <span class="spacer"></span>
-        <span class="save-status" id="save-status">Loading…</span>
-        <button id="add-row" disabled>+ Add row</button>
-        <button id="submit" class="primary" disabled>Submit</button>
+        <div class="title">
+            <h1>Add assemblies</h1>
+            <p class="subtitle">Drawings can be uploaded after submission from the assembly page.</p>
+        </div>
+        <div class="actions">
+            <button class="missing" id="missing" hidden></button>
+            <span class="status" id="status"><span class="dot"></span><span id="status-text">Loading…</span></span>
+            <button class="btn-tertiary" id="save" disabled>Save changes</button>
+            <button class="btn-primary" id="publish" disabled>Publish to manufacturing</button>
+        </div>
     </header>
 
     <main>
-        <div class="banner" id="banner"></div>
-        <p class="hint">
-            Edits save automatically. Set <b>Parent assembly</b> to group items under one assembly
-            (they become its child parts), or leave it on Standalone to create the item as its own assembly.
-            Right-click a row to remove it.
-            <br />Drawings are not needed now: submitting creates a placeholder drawing for every assembly and
-            child part, and you can replace them with the original drawings later.
-        </p>
-        <div id="grid-wrap">
-            <div id="loading">Loading line items…</div>
-            <div id="grid"></div>
-        </div>
+        <section class="pane doc" aria-label="PO documents">
+            <div class="doc-tabs" id="doc-tabs"></div>
+            <div class="viewer" id="viewer"><div class="empty">Loading…</div></div>
+        </section>
+        <section class="pane items" aria-label="Assemblies">
+            <div class="table-scroll" id="table-scroll">
+                <div class="loading" id="loading">Loading line items…</div>
+                <div class="table" id="table" hidden></div>
+            </div>
+        </section>
     </main>
 
-    <div class="modal-backdrop" id="create-modal">
-        <div class="modal" role="dialog" aria-labelledby="create-title">
-            <h2 id="create-title">Create new parent assembly</h2>
-            <p>Its assembly number and name will both be what you type here.</p>
-            <input id="create-name" placeholder="e.g. Fastener kit" autocomplete="off" />
-            <div class="field-error" id="create-error"></div>
-            <div class="actions">
-                <button id="create-cancel">Cancel</button>
-                <button id="create-ok" class="primary">Create</button>
+    <div class="menu" id="menu" role="menu" hidden></div>
+
+    <div class="backdrop" id="confirm">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <h2 id="confirm-title">Publish to manufacturing?</h2>
+            <ul id="confirm-list"></ul>
+            <p>The PO will be marked as accepted. Drawings can be uploaded afterwards from the assembly page.</p>
+            <div class="row-actions">
+                <button class="btn-tertiary" id="confirm-cancel">Cancel</button>
+                <button class="btn-primary" id="confirm-ok">Publish</button>
             </div>
         </div>
     </div>
 
-    <div class="modal-backdrop" id="confirm-modal">
-        <div class="modal" role="dialog" aria-labelledby="confirm-title">
-            <h2 id="confirm-title">Submit assemblies?</h2>
-            <div id="confirm-body"></div>
-            <div class="actions">
-                <button id="confirm-cancel">Cancel</button>
-                <button id="confirm-ok" class="primary">Submit</button>
-            </div>
-        </div>
-    </div>
+    <div class="toast" id="toast" role="status"><span id="toast-text"></span><button id="toast-action" hidden></button></div>
 
     <script>
         const params = new URLSearchParams(location.search);
@@ -200,21 +319,55 @@
         // The PO Assemblies Render service (backend/po_app.py); ?api= overrides it for testing
         const API_BASE = (params.get("api") || "https://po-assemblies.onrender.com").replace(/\/$/, "");
         const API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}`;
+        const EDITS_KEY = `po-assemblies:${PO_ROW_ID}:existing-edits`;
 
-        const STANDALONE = "Standalone";
-        const CREATE_NEW = "+ Create new…";
         const SAVE_DELAY_MS = 700;
-        // Fields the backend stores; the grid edits these plus `parent`, which maps to partOfGroup/groupName
         const SAVED_FIELDS = ["partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "rejected", "groupMaster"];
+        const GROUP_COLORS = ["#5fb3a6", "#9a8bd6", "#d0927c", "#7fa6d9", "#c2a55e", "#8dbb7c", "#c98bb3", "#6fb7c9"];
 
-        let hot = null;
-        let rows = [];            // grid rows (records), in display order
-        let groups = [];          // { name, partNumber }
+        let rows = [];             // line-item records shown on the page
+        let groups = [];           // { name, partNumber, existing, project }
         let projects = [];
-        const records = new Map(); // localId -> record, including removed rows and new group masters still to save
+        let existing = [];         // assemblies already in the PO's projects
+        let existingEdits = {};    // key -> { quantity?, partName?, remove? }, kept in the browser until publish
+        const records = new Map(); // localId -> record (rows, removed rows and new group masters still to save)
+        const selected = new Set();
         let nextLocalId = 1;
+        let busy = false;
 
         const $ = (id) => document.getElementById(id);
+        const lower = (s) => (s || "").trim().toLowerCase();
+        const partKey = (project, part) => `${lower(project)}|${lower(part)}`;
+
+        function h(tag, attrs, ...children) {
+            const el = document.createElement(tag);
+            for (const [k, v] of Object.entries(attrs || {})) {
+                if (v == null || v === false) continue;
+                if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+                else if (k === "class") el.className = v;
+                else if (k === "value") el.value = v;
+                else if (k === "style") el.style.cssText = v;
+                else if (k in el && typeof v !== "string") el[k] = v;
+                else el.setAttribute(k, v === true ? "" : v);
+            }
+            for (const c of children.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
+            return el;
+        }
+
+        const ICONS = {
+            chevron: '<path d="m6 9 6 6 6-6"/>',
+            trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
+            plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+            check: '<path d="M20 6 9 17l-5-5"/>',
+            external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+        };
+        function icon(name, size = 14, cls = "") {
+            const span = document.createElement("span");
+            span.className = cls;
+            span.style.display = "inline-flex";
+            span.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICONS[name]}</svg>`;
+            return span;
+        }
 
         // ---------- Records ----------
 
@@ -225,35 +378,46 @@
             return rec;
         }
 
-        function newRow() {
-            return {
+        function newRecord() {
+            return register({
                 rowId: null, partNumber: "", partName: "", quantity: null,
                 partOfGroup: false, groupName: "", project: projects.length === 1 ? projects[0] : "",
-                parent: STANDALONE, _error: "",
-            };
+            });
         }
 
-        function parentOf(rec) {
-            return rec.partOfGroup && rec.groupName ? rec.groupName : STANDALONE;
-        }
-
-        function findGroup(name) {
-            const key = name.trim().toLowerCase();
-            return groups.find((g) => g.name.toLowerCase() === key);
+        function isBlank(rec) {
+            return !rec.partNumber && !rec.partName && rec.quantity == null;
         }
 
         function markDirty(rec, keys) {
-            register(rec);
             keys.forEach((k) => rec._dirty.add(k));
             scheduleSave();
         }
 
+        const existingByPart = () => new Map(existing.map((e) => [partKey(e.project, e.partNumber), e]));
+        let existingIndex = new Map();
+        const matchOf = (rec) => (rec.project && rec.partNumber ? existingIndex.get(partKey(rec.project, rec.partNumber)) : null);
+
+        function findGroup(name) {
+            return groups.find((g) => lower(g.name) === lower(name));
+        }
+
+        function groupColor(name) {
+            const index = groups.findIndex((g) => lower(g.name) === lower(name));
+            return GROUP_COLORS[(index < 0 ? 0 : index) % GROUP_COLORS.length];
+        }
+
+        function tint(color) {
+            const alpha = getComputedStyle(document.documentElement).getPropertyValue("--tint-alpha").trim() || ".055";
+            const n = parseInt(color.slice(1), 16);
+            return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+        }
+
         function createGroup(name) {
-            const existing = findGroup(name);
-            if (existing) return existing.name;
-            const group = { name, partNumber: name };
-            groups.push(group);
-            // New groups get a master row like the extractor's, so they reload as dropdown options
+            const found = findGroup(name);
+            if (found) return found.name;
+            groups.push({ name, partNumber: name, existing: false, project: "" });
+            // New groups get a master row like the extractor's, so they come back as options on reload
             const master = register({
                 rowId: null, partNumber: name, partName: name, quantity: 1,
                 partOfGroup: false, groupName: name, groupMaster: true, project: "",
@@ -262,45 +426,60 @@
             return name;
         }
 
-        function setParent(rec, value) {
-            const name = (value || "").trim();
-            if (!name || name.toLowerCase() === STANDALONE.toLowerCase()) {
+        function setParent(rec, name) {
+            name = (name || "").trim();
+            if (!name) {
                 rec.partOfGroup = false;
                 rec.groupName = "";
             } else {
                 rec.partOfGroup = true;
                 rec.groupName = createGroup(name);
             }
-            rec.parent = parentOf(rec);
             markDirty(rec, ["partOfGroup", "groupName"]);
+        }
+
+        // ---------- Existing-assembly edits (kept in this browser until publish) ----------
+
+        function loadEdits() {
+            try { existingEdits = JSON.parse(localStorage.getItem(EDITS_KEY) || "{}") || {}; } catch { existingEdits = {}; }
+        }
+
+        function storeEdits() {
+            try { localStorage.setItem(EDITS_KEY, JSON.stringify(existingEdits)); } catch { /* storage unavailable */ }
+        }
+
+        function editExisting(key, change) {
+            const item = existing.find((e) => e.key === key);
+            const next = { ...(existingEdits[key] || {}), ...change };
+            if (next.quantity != null && item && Number(next.quantity) === item.quantity) delete next.quantity;
+            if (next.partName != null && item && next.partName.trim() === item.partName) delete next.partName;
+            if (!next.remove) delete next.remove;
+            if (Object.keys(next).length) existingEdits[key] = next; else delete existingEdits[key];
+            storeEdits();
         }
 
         // ---------- Saving ----------
 
         let saveTimer = null;
-        let saving = null;      // promise of the save in flight
+        let saving = null;
         let retryDelay = 2000;
 
         function setStatus(state, text) {
-            const el = $("save-status");
-            el.className = `save-status ${state}`;
-            el.textContent = text;
+            $("status").className = `status ${state}`;
+            $("status-text").textContent = text;
         }
 
-        function hasPending() {
-            if (hasDirty()) return true;
-            for (const rec of records.values()) if (rec._creating) return true;
+        function hasDirty() {
+            for (const rec of records.values()) {
+                if (rec._dirty.size && !rec._creating && !(isBlank(rec) && !rec.groupMaster && !rec.rejected)) return true;
+            }
             return false;
         }
 
         function scheduleSave(delay = SAVE_DELAY_MS) {
-            setStatus("", "Saving…");
+            setStatus("saving", "Saving…");
             clearTimeout(saveTimer);
             saveTimer = setTimeout(flush, delay);
-        }
-
-        function isEmptyNew(rec) {
-            return !rec.rowId && !rec.groupMaster && !rec.partNumber && !rec.partName && rec.quantity == null;
         }
 
         async function flush() {
@@ -312,7 +491,7 @@
                 if (!rec._dirty.size || rec._creating) continue;
                 if (!rec.rowId) {
                     if (rec.rejected) { records.delete(rec._localId); continue; } // removed before it was ever saved
-                    if (isEmptyNew(rec)) continue;
+                    if (isBlank(rec) && !rec.groupMaster) continue;
                     const fields = {};
                     SAVED_FIELDS.forEach((k) => { if (rec[k] !== undefined && rec[k] !== "" && rec[k] !== null) fields[k] = rec[k]; });
                     creates.push({ tempId: rec._localId, fields });
@@ -326,7 +505,7 @@
                 rec._dirty.clear();
             }
             if (!sent.length) {
-                if (!hasPending()) setStatus("saved", "All changes saved");
+                if (!hasDirty()) setStatus("saved", "Saved");
                 return;
             }
 
@@ -350,12 +529,11 @@
                     return true;
                 } catch (err) {
                     console.error("Save failed", err);
-                    // Put the changes back so the retry sends them again
                     for (const [rec, keys] of sent) {
                         keys.forEach((k) => rec._dirty.add(k));
                         rec._creating = false;
                     }
-                    setStatus("error", `Not saved – retrying (${err.message})`);
+                    setStatus("error", "Not saved – retrying");
                     saveTimer = setTimeout(flush, retryDelay);
                     retryDelay = Math.min(retryDelay * 2, 30000);
                     return false;
@@ -367,308 +545,559 @@
             const ok = await saving;
             if (!ok) return;
             if (hasDirty()) return flush();
-            setStatus("saved", "All changes saved");
+            setStatus("saved", "Saved");
         }
 
-        function hasDirty() {
-            for (const rec of records.values()) {
-                if (rec._dirty.size && !rec._creating && !(isEmptyNew(rec) && !rec.rejected)) return true;
+        async function flushAll() {
+            for (let i = 0; i < 20; i++) {
+                await flush();
+                const pending = hasDirty() || saving || [...records.values()].some((r) => r._creating);
+                if (!pending) return true;
+                if ($("status").classList.contains("error")) return false;
+                await new Promise((r) => setTimeout(r, 300));
             }
-            return false;
+            return !hasDirty();
         }
 
-        // Save straight away when the page is hidden or closed
         document.addEventListener("visibilitychange", () => { if (document.hidden) flush(); });
         window.addEventListener("pagehide", () => flush());
         window.addEventListener("beforeunload", (e) => {
             if (hasDirty() || saving) { flush(); e.preventDefault(); e.returnValue = ""; }
         });
 
-        async function flushAll() {
-            for (let i = 0; i < 20; i++) {
-                await flush();
-                if (!hasDirty() && !saving && !hasPending()) return true;
-                if ($("save-status").classList.contains("error")) return false;
-                await new Promise((r) => setTimeout(r, 300));
+        // ---------- Validation and summary ----------
+
+        function newRows() { return rows.filter((r) => !matchOf(r)); }
+        function matchedRows() { return rows.filter((r) => matchOf(r)); }
+
+        function rowProblems(rec) {
+            const problems = {};
+            if (matchOf(rec)) {
+                if (!(rec.quantity > 0)) problems.quantity = true;
+                return problems;
             }
-            return !hasDirty();
+            if (isBlank(rec)) return problems;
+            if (!rec.partNumber) problems.partNumber = true;
+            if (!(rec.quantity > 0)) problems.quantity = true;
+            if (!rec.project) problems.project = true;
+            return problems;
         }
 
-        // ---------- Grid ----------
-
-        function parentOptions() {
-            return [STANDALONE, ...groups.map((g) => g.name), CREATE_NEW];
+        function existingProblems(item) {
+            const edit = existingEdits[item.key];
+            return edit && edit.quantity != null && !(Number(edit.quantity) > 0) ? { quantity: true } : {};
         }
 
-        // Runs as a Handsontable hook, so `this` is the grid (also during the first render, before `hot` is set)
-        function decorate(td, row, col, prop) {
-            const rec = rows[this.toPhysicalRow(row)];
-            if (!rec) return;
-            td.classList.toggle("group-row", rec.partOfGroup && !!rec.groupName);
-            td.classList.toggle("has-error", !!rec._error && prop !== "_error");
-            if (prop === "parent") {
-                td.classList.toggle("parent-standalone", !(rec.partOfGroup && rec.groupName));
-                td.classList.toggle("parent-group", rec.partOfGroup && !!rec.groupName);
+        function summary() {
+            const add = newRows().filter((r) => !isBlank(r));
+            const updates = matchedRows().filter((r) => r.quantity !== matchOf(r).quantity).length +
+                Object.values(existingEdits).filter((e) => !e.remove && e.quantity != null).length;
+            const removals = Object.values(existingEdits).filter((e) => e.remove).length;
+            const renames = Object.values(existingEdits).filter((e) => !e.remove && e.partName != null && e.quantity == null).length;
+            const matched = matchedRows().length;
+            const missing = rows.reduce((n, r) => n + Object.keys(rowProblems(r)).length, 0) +
+                existing.reduce((n, e) => n + Object.keys(existingProblems(e)).length, 0);
+            return { add: add.length, updates, removals, renames, matched, missing, work: add.length + matched + Object.keys(existingEdits).length };
+        }
+
+        function refreshChrome() {
+            const s = summary();
+            const missing = $("missing");
+            missing.hidden = !s.missing;
+            missing.textContent = `${s.missing} required field${s.missing === 1 ? "" : "s"} missing`;
+            $("publish").disabled = busy || s.missing > 0 || s.work === 0;
+            $("save").disabled = busy;
+            const footer = $("footer");
+            if (footer) {
+                const parts = [];
+                if (s.add) parts.push(`${s.add} new`);
+                if (s.updates) parts.push(`${s.updates} quantity update${s.updates === 1 ? "" : "s"}`);
+                if (s.renames) parts.push(`${s.renames} rename${s.renames === 1 ? "" : "s"}`);
+                if (s.removals) parts.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
+                footer.textContent = parts.length ? `On publish: ${parts.join(" · ")}` : "Nothing to publish yet";
             }
-            if (prop === "_error") td.classList.add("issue-cell");
-        }
-
-        function buildGrid() {
-            $("loading").style.display = "none";
-            hot = new Handsontable($("grid"), {
-                data: rows,
-                dataSchema: newRow,
-                colHeaders: ["Assembly number", "Assembly name", "Qty", "Parent assembly", "Added to project", "Issue"],
-                columns: [
-                    { data: "partNumber" },
-                    { data: "partName" },
-                    { data: "quantity", type: "numeric", allowInvalid: false },
-                    {
-                        data: "parent",
-                        type: "dropdown",
-                        source: (query, process) => process(parentOptions()),
-                        strict: false,   // typing a new name creates a new parent
-                        allowInvalid: true,
-                        filter: false,
-                    },
-                    {
-                        data: "project",
-                        type: "dropdown",
-                        source: (query, process) => process(projects),
-                        strict: true,
-                        allowInvalid: false,
-                        filter: false,
-                    },
-                    { data: "_error", readOnly: true },
-                ],
-                colWidths: [170, 240, 70, 200, 190, 240],
-                rowHeaders: true,
-                stretchH: "all",
-                height: "auto",
-                minSpareRows: 0,
-                autoWrapRow: true,
-                wordWrap: true,
-                licenseKey: "non-commercial-and-evaluation",
-                afterRenderer: decorate,
-                contextMenu: {
-                    items: {
-                        add_below: {
-                            name: "Add row below",
-                            callback: (key, selection) => {
-                                const at = selection[selection.length - 1].end.row + 1;
-                                hot.alter("insert_row", at);
-                            },
-                        },
-                        remove: {
-                            name: "Remove row(s)",
-                            callback: (key, selection) => removeSelected(selection),
-                        },
-                    },
-                },
-                afterCreateRow: (index, amount) => {
-                    for (let i = index; i < index + amount; i++) register(rows[hot.toPhysicalRow(i)]);
-                },
-                afterChange: onChange,
+            document.querySelectorAll("[data-check]").forEach((cell) => {
+                const [kind, id, field] = cell.dataset.check.split("|");
+                const problems = kind === "row" ? rowProblems(records.get(id) || {}) : existingProblems(existing.find((e) => e.key === id) || {});
+                cell.classList.toggle("invalid", !!problems[field]);
+                const select = cell.querySelector(".select");
+                if (select && field === "project") select.classList.toggle("invalid", !!problems[field]);
             });
         }
 
-        function onChange(changes, source) {
-            if (!changes || source === "loadData" || source === "internal") return;
-            let rerender = false;
-            for (const [row, prop, oldValue, newValue] of changes) {
-                const rec = rows[hot.toPhysicalRow(row)];
-                if (!rec || oldValue === newValue) continue;
-                register(rec);
-                if (rec._error) { rec._error = ""; rerender = true; }
+        // ---------- Rendering ----------
 
-                if (prop === "parent") {
-                    if (newValue === CREATE_NEW) {
-                        rec.parent = parentOf(rec);
-                        rerender = true;
-                        openCreateModal(rec);
-                        continue;
-                    }
-                    setParent(rec, newValue);
-                    rerender = true;
-                } else if (prop === "quantity") {
-                    if (newValue === "" || newValue == null) rec.quantity = null;
-                    else if (isNaN(Number(newValue))) { rec.quantity = oldValue; rerender = true; continue; }
-                    else rec.quantity = Number(newValue);
-                    markDirty(rec, ["quantity"]);
-                } else if (prop === "partNumber" || prop === "partName" || prop === "project") {
-                    rec[prop] = newValue == null ? "" : String(newValue);
-                    // A new row needs its project and parent fields saved along with its first value
-                    markDirty(rec, rec.rowId ? [prop] : [prop, "project", "partOfGroup", "groupName"]);
-                }
+        function render() {
+            existingIndex = existingByPart();
+            const focus = document.activeElement?.dataset?.focus;
+            const caret = document.activeElement?.selectionStart;
+            const table = $("table");
+            table.replaceChildren(renderNewSection(), ...renderExistingSections(), h("div", { class: "footer", id: "footer" }));
+            if (focus) {
+                const el = table.querySelector(`[data-focus="${CSS.escape(focus)}"]`);
+                if (el) { el.focus(); if (caret != null && el.setSelectionRange) try { el.setSelectionRange(caret, caret); } catch { } }
             }
-            if (rerender) hot.render();
+            table.querySelectorAll("textarea.in").forEach(autoGrow);
+            refreshChrome();
         }
 
-        function removeSelected(selection) {
-            const indices = new Set();
-            for (const range of selection) {
-                for (let r = Math.min(range.start.row, range.end.row); r <= Math.max(range.start.row, range.end.row); r++) indices.add(r);
+        function columnHeader(withSelectAll) {
+            const list = newRows();
+            const all = withSelectAll && list.length > 0 && list.every((r) => selected.has(r._localId));
+            return h("div", { class: "grid colhead" },
+                h("span", { style: "align-items:center" }, withSelectAll ? h("input", {
+                    type: "checkbox", "aria-label": "Select all rows", checked: all,
+                    onchange: (e) => { list.forEach((r) => e.target.checked ? selected.add(r._localId) : selected.delete(r._localId)); render(); },
+                }) : ""),
+                h("span", {}, "Parent assembly", h("small", {}, "Assembly becomes its child")),
+                h("span", {}, withSelectAll ? "Assembly number *" : "Assembly number"),
+                h("span", {}, "Assembly name"),
+                h("span", { class: "num" }, "Qty *"),
+                h("span", {}, withSelectAll ? "Project *" : "Project"),
+                h("span", {}),
+            );
+        }
+
+        function renderNewSection() {
+            const list = newRows();
+            const head = h("div", { class: "section-head" });
+            if (selected.size) {
+                head.append(h("div", { class: "bulk" },
+                    h("span", { class: "name" }, `${selected.size} selected`),
+                    h("span", { class: "sep" }),
+                    h("button", { class: "btn-outline", onclick: (e) => openParentMenu(e.currentTarget, [...selected].map((id) => records.get(id))) }, "Set parent", icon("chevron")),
+                    h("button", { class: "btn-outline", onclick: (e) => openProjectMenu(e.currentTarget, [...selected].map((id) => records.get(id))) }, "Set project", icon("chevron")),
+                    h("button", { class: "btn-tertiary danger", style: "height:32px", onclick: () => removeRows([...selected].map((id) => records.get(id))) }, "Remove"),
+                ), h("span", { class: "spacer" }),
+                    h("button", { class: "btn-tertiary", style: "height:32px", onclick: () => { selected.clear(); render(); } }, "Clear selection"));
+            } else {
+                head.append(
+                    h("span", { class: "name" }, "New assemblies"),
+                    h("span", { class: "count" }, String(list.filter((r) => !isBlank(r)).length)),
+                    h("span", { class: "spacer" }),
+                    h("button", { class: "btn-outline", onclick: addRow }, icon("plus"), "Add row"),
+                );
             }
-            const sorted = [...indices].sort((a, b) => b - a);
-            const named = sorted.map((r) => rows[hot.toPhysicalRow(r)]).filter((rec) => rec && (rec.partNumber || rec.partName));
-            if (named.length && !confirm(`Remove ${named.length} row(s)? They will be marked as rejected and won't be submitted.`)) return;
-            for (const r of sorted) {
-                const rec = rows[hot.toPhysicalRow(r)];
-                if (!rec) continue;
-                register(rec);
+            const body = list.length ? list.map(renderNewRow)
+                : [h("div", { class: "empty-note" }, projects.length ? "No new items. Use Add row to add one." : "This PO has no projects yet, so nothing can be published.")];
+            return h("div", {}, head, columnHeader(true), ...body,
+                h("div", { class: "add-row-line" }, h("button", { onclick: addRow }, "+ Add row")));
+        }
+
+        function parentButton(rec, onOpen) {
+            const grouped = rec.partOfGroup && rec.groupName;
+            return h("button", {
+                class: `select${grouped ? "" : " placeholder"}`, "aria-haspopup": "menu", "aria-expanded": "false",
+                onclick: (e) => onOpen(e.currentTarget),
+            },
+                grouped ? h("span", { class: "dot-g", style: `background:${groupColor(rec.groupName)}` }) : "",
+                h("span", { class: "label" }, grouped ? rec.groupName : "Standalone"),
+                icon("chevron", 14, "chev"));
+        }
+
+        function rowTint(groupName) {
+            return groupName ? `background:${tint(groupColor(groupName))}` : "";
+        }
+
+        function inputCell(rec, field, opts = {}) {
+            const tag = opts.multiline ? "textarea" : "input";
+            const el = h(tag, {
+                class: `in${opts.mono ? " mono" : ""}${opts.numeric ? " num" : ""}`,
+                value: rec[field] == null ? "" : String(rec[field]),
+                placeholder: opts.placeholder || "",
+                inputmode: opts.numeric ? "decimal" : null,
+                rows: opts.multiline ? 1 : null,
+                "aria-label": opts.label,
+                "data-focus": `${rec._localId}:${field}`,
+                oninput: (e) => {
+                    let value = e.target.value;
+                    if (opts.numeric) value = value.trim() === "" ? null : (isNaN(Number(value)) ? rec[field] : Number(value));
+                    rec[field] = value;
+                    if (opts.multiline) autoGrow(e.target);
+                    markDirty(rec, rec.rowId ? [field] : [field, "project", "partOfGroup", "groupName"]);
+                    refreshChrome();
+                },
+                onchange: () => { if (field === "partNumber") render(); },
+                onkeydown: (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); moveDown(e.target, field); } },
+            });
+            return h("span", { class: "cell", "data-check": `row|${rec._localId}|${field}` }, el);
+        }
+
+        function renderNewRow(rec) {
+            const grouped = rec.partOfGroup && rec.groupName;
+            return h("div", { class: `grid row${selected.has(rec._localId) ? " selected" : ""}`, style: grouped ? rowTint(rec.groupName) : "" },
+                h("span", { class: "cell center" }, h("input", {
+                    type: "checkbox", "aria-label": "Select row", checked: selected.has(rec._localId),
+                    onchange: (e) => { e.target.checked ? selected.add(rec._localId) : selected.delete(rec._localId); render(); },
+                })),
+                h("span", { class: "cell pad" }, parentButton(rec, (btn) => openParentMenu(btn, [rec]))),
+                inputCell(rec, "partNumber", { mono: true, placeholder: "Required", label: "Assembly number" }),
+                inputCell(rec, "partName", { multiline: true, label: "Assembly name" }),
+                inputCell(rec, "quantity", { numeric: true, placeholder: "Required", label: "Quantity" }),
+                h("span", { class: "cell pad", "data-check": `row|${rec._localId}|project` }, h("button", {
+                    class: `select${rec.project ? "" : " placeholder"}`, "aria-haspopup": "menu", "aria-expanded": "false",
+                    onclick: (e) => openProjectMenu(e.currentTarget, [rec]),
+                }, h("span", { class: "label" }, rec.project || "Select"), icon("chevron", 14, "chev"))),
+                h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove row", title: "Remove row", onclick: () => removeRows([rec]) }, icon("trash", 15))),
+            );
+        }
+
+        function renderExistingSections() {
+            const byProject = new Map(projects.map((p) => [lower(p), { name: p, items: [] }]));
+            for (const item of existing) {
+                const bucket = byProject.get(lower(item.project));
+                if (bucket) bucket.items.push(item);
+            }
+            const matched = new Map(matchedRows().map((r) => [matchOf(r).key, r]));
+            const sections = [];
+            for (const { name, items } of byProject.values()) {
+                if (!items.length) continue;
+                sections.push(h("div", { class: "section-head existing-head" },
+                    h("span", { class: "name" }, `Already in ${name}`),
+                    h("span", { class: "count" }, String(items.length)),
+                    h("span", { class: "note" }, "· Assembly number and project are locked")));
+                sections.push(columnHeader(false));
+                for (const item of items) sections.push(matched.has(item.key) ? renderMatchedRow(item, matched.get(item.key)) : renderExistingRow(item));
+            }
+            return sections;
+        }
+
+        function lockedParent(item) {
+            return h("button", { class: "select", disabled: true, title: "Change the parent from the assembly page" },
+                item.parent ? h("span", { class: "dot-g", style: `background:${groupColor(item.parent)}` }) : "",
+                h("span", { class: "label" }, item.parent || "Standalone"), icon("chevron", 14, "chev"));
+        }
+
+        function renderExistingRow(item) {
+            const edit = existingEdits[item.key] || {};
+            const removed = !!edit.remove;
+            const qty = edit.quantity != null ? edit.quantity : item.quantity;
+            const name = edit.partName != null ? edit.partName : item.partName;
+            const focusId = `ex-${item.key}`;
+            return h("div", { class: `grid row${removed ? " removed" : ""}`, style: item.parent && !removed ? rowTint(item.parent) : "" },
+                h("span", { class: "cell" }),
+                h("span", { class: "cell pad" }, lockedParent(item)),
+                h("span", { class: "cell text mono muted strike" }, item.partNumber),
+                h("span", { class: "cell" }, h("textarea", {
+                    class: "in strike", rows: 1, value: name, disabled: removed, "aria-label": "Assembly name", "data-focus": `${focusId}:name`,
+                    oninput: (e) => { autoGrow(e.target); editExisting(item.key, { partName: e.target.value }); refreshChrome(); },
+                })),
+                h("span", { class: "cell", "data-check": `ex|${item.key}|quantity` }, h("span", { class: "qty-wrap" },
+                    h("input", {
+                        class: "in num strike", value: qty == null ? "" : String(qty), inputmode: "decimal", disabled: removed,
+                        "aria-label": "Quantity", "data-focus": `${focusId}:qty`,
+                        oninput: (e) => { editExisting(item.key, { quantity: e.target.value.trim() === "" ? 0 : Number(e.target.value) }); refreshChrome(); },
+                        onchange: () => render(),
+                    }),
+                    edit.quantity != null && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
+                h("span", { class: "cell text muted" }, item.project),
+                h("span", { class: "cell center" }, removed
+                    ? h("button", { class: "undo", onclick: () => { editExisting(item.key, { remove: false }); render(); } }, "Undo")
+                    : h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15))),
+            );
+        }
+
+        // A PO line item whose assembly already exists in its project: publishing updates that assembly's qty
+        function renderMatchedRow(item, rec) {
+            return h("div", { class: "grid row", style: item.parent ? rowTint(item.parent) : "" },
+                h("span", { class: "cell" }),
+                h("span", { class: "cell pad" }, lockedParent(item)),
+                h("span", { class: "cell text mono muted" }, item.partNumber),
+                h("span", { class: "cell text", style: "color:var(--text-2)" }, item.partName || rec.partName),
+                h("span", { class: "cell", "data-check": `row|${rec._localId}|quantity` }, h("span", { class: "qty-wrap" },
+                    h("input", {
+                        class: "in num", value: rec.quantity == null ? "" : String(rec.quantity), inputmode: "decimal", placeholder: "Required",
+                        "aria-label": "Quantity from this PO", "data-focus": `${rec._localId}:quantity`,
+                        oninput: (e) => {
+                            const v = e.target.value.trim();
+                            rec.quantity = v === "" ? null : (isNaN(Number(v)) ? rec.quantity : Number(v));
+                            markDirty(rec, ["quantity"]);
+                            refreshChrome();
+                        },
+                        onchange: () => render(),
+                    }),
+                    rec.quantity !== item.quantity && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
+                h("span", { class: "cell text muted" }, item.project),
+                h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove this PO line", title: "Remove this PO line", onclick: () => removeRows([rec]) }, icon("trash", 15))),
+            );
+        }
+
+        function autoGrow(el) {
+            el.style.height = "auto";
+            el.style.height = `${Math.max(50, el.scrollHeight)}px`;
+        }
+
+        function moveDown(el, field) {
+            const all = [...document.querySelectorAll(`[data-focus$=":${field}"]`)];
+            const next = all[all.indexOf(el) + 1];
+            if (next) next.focus(); else el.blur();
+        }
+
+        // ---------- Row actions ----------
+
+        function addRow() {
+            const rec = newRecord();
+            rows.push(rec);
+            selected.clear();
+            render();
+            document.querySelector(`[data-focus="${rec._localId}:partNumber"]`)?.focus();
+        }
+
+        function removeRows(list) {
+            list = list.filter(Boolean);
+            const removed = list.map((rec) => ({ rec, index: rows.indexOf(rec) }));
+            for (const rec of list) {
+                rows = rows.filter((r) => r !== rec);
+                selected.delete(rec._localId);
                 rec.rejected = true;
                 markDirty(rec, ["rejected"]);
-                hot.alter("remove_row", r);
+            }
+            render();
+            const named = removed.filter(({ rec }) => !isBlank(rec)).length;
+            if (named) {
+                toast(`${named} row${named === 1 ? "" : "s"} removed`, "Undo", () => {
+                    for (const { rec, index } of removed.sort((a, b) => a.index - b.index)) {
+                        rec.rejected = false;
+                        register(rec);
+                        markDirty(rec, ["rejected"]);
+                        rows.splice(Math.min(index, rows.length), 0, rec);
+                    }
+                    render();
+                });
             }
         }
 
-        // ---------- "Create new" parent ----------
+        // ---------- Menus ----------
 
-        let createTarget = null;
+        let menuAnchor = null;
 
-        function openCreateModal(rec) {
-            createTarget = rec;
-            $("create-name").value = "";
-            $("create-error").textContent = "";
-            $("create-modal").classList.add("show");
-            setTimeout(() => $("create-name").focus(), 0);
+        function openMenu(anchor, build) {
+            closeMenu();
+            const menu = $("menu");
+            menu.replaceChildren(...build());
+            menu.hidden = false;
+            menuAnchor = anchor;
+            anchor.setAttribute("aria-expanded", "true");
+            const r = anchor.getBoundingClientRect();
+            menu.style.minWidth = `${Math.max(220, r.width)}px`;
+            const below = window.innerHeight - r.bottom;
+            const height = Math.min(menu.scrollHeight, 360);
+            menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)}px`;
+            menu.style.top = below < height + 12 && r.top > height + 12 ? `${r.top - height - 4}px` : `${r.bottom + 4}px`;
+            (menu.querySelector("[aria-checked='true']") || menu.querySelector(".opt"))?.focus();
         }
 
-        function closeCreateModal() {
-            $("create-modal").classList.remove("show");
-            createTarget = null;
+        function closeMenu() {
+            $("menu").hidden = true;
+            if (menuAnchor) { menuAnchor.setAttribute("aria-expanded", "false"); menuAnchor = null; }
         }
 
-        function confirmCreate() {
-            const name = $("create-name").value.trim();
-            if (!name) { $("create-error").textContent = "Enter a name"; return; }
-            if (name.toLowerCase() === STANDALONE.toLowerCase() || name === CREATE_NEW) {
-                $("create-error").textContent = "Choose a different name"; return;
-            }
-            const rec = createTarget;
-            closeCreateModal();
-            if (rec) setParent(rec, name);
-            else createGroup(name);
-            hot.render();
-        }
-
-        $("create-ok").addEventListener("click", confirmCreate);
-        $("create-cancel").addEventListener("click", closeCreateModal);
-        $("create-name").addEventListener("keydown", (e) => {
-            if (e.key === "Enter") confirmCreate();
-            if (e.key === "Escape") closeCreateModal();
+        document.addEventListener("mousedown", (e) => {
+            if (!$("menu").hidden && !$("menu").contains(e.target) && e.target !== menuAnchor && !menuAnchor?.contains(e.target)) closeMenu();
+        });
+        document.addEventListener("keydown", (e) => {
+            if (e.key === "Escape" && !$("menu").hidden) { const a = menuAnchor; closeMenu(); a?.focus(); }
+        });
+        window.addEventListener("resize", closeMenu);
+        $("table-scroll").addEventListener("scroll", closeMenu);
+        $("menu").addEventListener("keydown", (e) => {
+            if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+            const opts = [...$("menu").querySelectorAll(".opt")];
+            const i = opts.indexOf(document.activeElement);
+            opts[(i + (e.key === "ArrowDown" ? 1 : -1) + opts.length) % opts.length]?.focus();
+            e.preventDefault();
         });
 
-        // ---------- Submit ----------
-
-        function summary() {
-            const named = rows.filter((r) => r.partNumber || r.partName || r.quantity != null);
-            const grouped = new Map();
-            let standalone = 0;
-            for (const r of named) {
-                if (r.partOfGroup && r.groupName) {
-                    const key = r.groupName.toLowerCase();
-                    grouped.set(key, (grouped.get(key) || 0) + 1);
-                } else standalone++;
-            }
-            const children = [...grouped.values()].reduce((a, b) => a + b, 0);
-            return { standalone, groups: grouped.size, children, drawings: standalone + grouped.size + children };
+        function option(label, checked, onPick, extra = {}) {
+            return h("button", { class: "opt", role: "menuitemradio", "aria-checked": checked ? "true" : "false", onclick: onPick },
+                extra.color ? h("span", { class: "dot-g", style: `background:${extra.color}` }) : "",
+                h("span", { class: "label" }, label),
+                extra.meta ? h("span", { class: "meta" }, extra.meta) : "",
+                h("span", { class: "check" }, checked ? icon("check", 15) : ""));
         }
+
+        function openParentMenu(anchor, targets) {
+            const current = targets.length === 1 ? (targets[0].partOfGroup ? lower(targets[0].groupName) : "") : null;
+            const pick = (name) => () => {
+                targets.forEach((rec) => setParent(rec, name));
+                closeMenu();
+                render();
+            };
+            const counts = new Map();
+            rows.forEach((r) => { if (r.partOfGroup && r.groupName) counts.set(lower(r.groupName), (counts.get(lower(r.groupName)) || 0) + 1); });
+            openMenu(anchor, () => {
+                const items = [option("Standalone", current === "", pick(""))];
+                if (groups.length) {
+                    items.push(h("div", { class: "divider" }));
+                    for (const g of groups) {
+                        const meta = g.existing ? `in ${g.project}` : String(counts.get(lower(g.name)) || 0);
+                        items.push(option(g.name, current === lower(g.name), pick(g.name), { color: groupColor(g.name), meta }));
+                    }
+                }
+                items.push(h("div", { class: "divider" }));
+                const create = h("button", { class: "opt", role: "menuitem" }, icon("plus", 15), h("span", { class: "label" }, "Create new parent assembly"));
+                create.addEventListener("click", () => {
+                    const input = h("input", { placeholder: "Name of the parent assembly", "aria-label": "New parent assembly name" });
+                    const submit = () => {
+                        const name = input.value.trim();
+                        if (!name) { input.focus(); return; }
+                        pick(name)();
+                    };
+                    input.addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+                    create.replaceWith(h("div", { class: "create" }, input, h("button", { onclick: submit }, "Add")));
+                    input.focus();
+                });
+                items.push(create);
+                return items;
+            });
+        }
+
+        function openProjectMenu(anchor, targets) {
+            const current = targets.length === 1 ? targets[0].project : null;
+            openMenu(anchor, () => {
+                if (!projects.length) return [h("div", { class: "heading" }, "No projects on this PO")];
+                return [h("div", { class: "heading" }, "Projects on this PO"), ...projects.map((p) => option(p, current === p, () => {
+                    targets.forEach((rec) => { rec.project = p; markDirty(rec, ["project"]); });
+                    closeMenu();
+                    render();
+                }))];
+            });
+        }
+
+        // ---------- Toast ----------
+
+        let toastTimer = null;
+        function toast(text, actionLabel, action, kind = "") {
+            const el = $("toast");
+            el.className = `toast show ${kind}`;
+            $("toast-text").textContent = text;
+            const btn = $("toast-action");
+            btn.hidden = !actionLabel;
+            btn.textContent = actionLabel || "";
+            btn.onclick = () => { el.className = "toast"; action?.(); };
+            clearTimeout(toastTimer);
+            toastTimer = setTimeout(() => { el.className = "toast"; }, kind === "error" ? 12000 : 6000);
+        }
+
+        // ---------- Publish ----------
 
         function openConfirm() {
             const s = summary();
-            if (!s.standalone && !s.groups) { showBanner("info", "There is nothing to submit."); return; }
-            const body = $("confirm-body");
-            body.innerHTML = "";
-            const list = document.createElement("ul");
-            [
-                `${s.standalone} standalone assembl${s.standalone === 1 ? "y" : "ies"}`,
-                `${s.groups} parent assembl${s.groups === 1 ? "y" : "ies"} with ${s.children} child part${s.children === 1 ? "" : "s"}`,
-            ].forEach((text) => { const li = document.createElement("li"); li.textContent = text; list.appendChild(li); });
-            body.appendChild(list);
-            const p = document.createElement("p");
-            p.textContent = `A placeholder drawing will be created for each of the ${s.drawings} parts; ` +
-                "you can replace them with the original drawings later. The PO will be marked as accepted, " +
-                "and submitted items are removed from this table.";
-            body.appendChild(p);
-            $("confirm-modal").classList.add("show");
+            const lines = [];
+            if (s.add) lines.push(`${s.add} new assembl${s.add === 1 ? "y" : "ies"}`);
+            if (s.updates) lines.push(`${s.updates} quantity update${s.updates === 1 ? "" : "s"}`);
+            if (s.renames) lines.push(`${s.renames} rename${s.renames === 1 ? "" : "s"}`);
+            if (s.removals) lines.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
+            $("confirm-list").replaceChildren(...lines.map((t) => h("li", {}, t)));
+            $("confirm").classList.add("show");
+            $("confirm-ok").focus();
         }
 
-        async function submit() {
-            $("confirm-modal").classList.remove("show");
-            setBusy(true);
-            hideBanner();
+        async function publish() {
+            $("confirm").classList.remove("show");
+            busy = true;
+            refreshChrome();
             try {
                 if (!(await flushAll())) throw new Error("Your latest edits could not be saved. Check your connection and try again.");
-                setStatus("", "Submitting…");
+                setStatus("saving", "Publishing…");
                 const res = await fetch(`${API}/submit`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ user: USER_EMAIL }),
+                    body: JSON.stringify({
+                        user: USER_EMAIL,
+                        existingChanges: Object.entries(existingEdits).map(([key, e]) => ({ key, ...e })),
+                    }),
                 });
                 const body = await res.json().catch(() => ({}));
                 if (!res.ok) {
                     if (body.rowErrors) showRowErrors(body.rowErrors);
-                    throw new Error(body.error || `Submit failed (HTTP ${res.status})`);
+                    throw new Error(body.error || `Publish failed (HTTP ${res.status})`);
                 }
-                const parts = [
-                    `${body.standaloneAssemblies} standalone assembl${body.standaloneAssemblies === 1 ? "y" : "ies"}`,
-                    `${body.groupAssemblies} parent assembl${body.groupAssemblies === 1 ? "y" : "ies"}`,
-                    `${body.childParts} child part${body.childParts === 1 ? "" : "s"}`,
-                ];
-                const drawings = body.drawingsCreated + body.drawingsUpdated;
+                existingEdits = {};
+                storeEdits();
+                const parts = [];
+                const created = body.standaloneAssemblies + body.groupAssemblies;
+                if (created) parts.push(`${created} assembl${created === 1 ? "y" : "ies"} created`);
+                if (body.childParts) parts.push(`${body.childParts} child part${body.childParts === 1 ? "" : "s"} added`);
+                if (body.quantityUpdates) parts.push(`${body.quantityUpdates} quantity update${body.quantityUpdates === 1 ? "" : "s"}`);
+                if (body.removals) parts.push(`${body.removals} removed`);
                 await load();
-                let message = `Submitted: ${parts.join(", ")}.`;
-                if (drawings) {
-                    message += `\n${body.drawingsCreated} placeholder drawing(s) created` +
-                        (body.drawingsUpdated ? `, ${body.drawingsUpdated} existing drawing(s) updated` : "") +
-                        ". You can replace the placeholders with the original drawings later.";
-                }
-                if (body.warnings && body.warnings.length) {
-                    showBanner("error", `${message}\n\n${body.warnings.join("\n")}`);
-                } else {
-                    showBanner("ok", message);
-                }
+                const warnings = body.warnings || [];
+                toast(`Published: ${parts.join(", ") || "done"}.${warnings.length ? `\n${warnings.join("\n")}` : ""}`, null, null, warnings.length ? "error" : "");
             } catch (err) {
-                showBanner("error", err.message);
-                setStatus("saved", "All changes saved");
+                toast(err.message, null, null, "error");
+                setStatus("saved", "Saved");
             } finally {
-                setBusy(false);
+                busy = false;
+                refreshChrome();
             }
         }
 
         function showRowErrors(rowErrors) {
-            const byRow = new Map();
-            for (const e of rowErrors) {
-                byRow.set(e.rowId, byRow.has(e.rowId) ? `${byRow.get(e.rowId)}; ${e.message}` : e.message);
-            }
-            rows.forEach((r) => { r._error = byRow.get(r.rowId) || ""; });
-            hot.render();
+            const byId = new Map(rowErrors.map((e) => [e.rowId, e.message]));
+            document.querySelectorAll("[data-check]").forEach((cell) => {
+                const [kind, id] = cell.dataset.check.split("|");
+                const key = kind === "row" ? records.get(id)?.rowId : id;
+                if (byId.has(key)) { cell.classList.add("invalid"); cell.title = byId.get(key); }
+            });
         }
 
-        $("submit").addEventListener("click", openConfirm);
-        $("confirm-ok").addEventListener("click", submit);
-        $("confirm-cancel").addEventListener("click", () => $("confirm-modal").classList.remove("show"));
-        $("add-row").addEventListener("click", () => {
-            hot.alter("insert_row", rows.length);
-            hot.selectCell(rows.length - 1, 0);
+        $("publish").addEventListener("click", openConfirm);
+        $("confirm-ok").addEventListener("click", publish);
+        $("confirm-cancel").addEventListener("click", () => $("confirm").classList.remove("show"));
+        $("save").addEventListener("click", async () => {
+            storeEdits();
+            const ok = await flushAll();
+            toast(ok ? "All changes saved" : "Could not save – retrying", null, null, ok ? "" : "error");
+        });
+        $("missing").addEventListener("click", () => {
+            const cell = document.querySelector("[data-check].invalid");
+            if (!cell) return;
+            cell.scrollIntoView({ block: "center", behavior: "smooth" });
+            (cell.querySelector("input, textarea, button"))?.focus({ preventScroll: true });
         });
 
+        // ---------- Documents ----------
+
+        function renderDocs(po) {
+            const tabs = [];
+            po.attachmentIds.forEach((id, i) => tabs.push({
+                label: po.attachmentIds.length === 1 ? "Attachment" : `Attachment ${i + 1}`,
+                src: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
+                open: `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`,
+            }));
+            if (po.emailBody) tabs.push({ label: "Email", email: po.emailBody });
+
+            const viewer = $("viewer");
+            const bar = $("doc-tabs");
+            if (!tabs.length) {
+                bar.replaceChildren(h("span", { class: "tab active" }, "No attachments"));
+                viewer.replaceChildren(h("div", { class: "empty" }, "This PO has no attachments or email body."));
+                return;
+            }
+            const show = (index) => {
+                const tab = tabs[index];
+                bar.replaceChildren(
+                    ...tabs.map((t, i) => h("button", { class: `tab${i === index ? " active" : ""}`, onclick: () => show(i) }, t.label)),
+                    tab.open ? h("a", { class: "doc-open", href: tab.open, target: "_blank", rel: "noopener" }, "Open", icon("external", 13)) : "",
+                );
+                if (tab.src) {
+                    viewer.replaceChildren(h("iframe", { src: tab.src, title: tab.label, allow: "autoplay" }));
+                } else {
+                    const isHtml = /<[a-z][\s\S]*>/i.test(tab.email);
+                    const content = isHtml ? tab.email
+                        : `<pre style="white-space:pre-wrap;font:14px/1.5 -apple-system,system-ui,sans-serif">${tab.email.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`;
+                    // Sandboxed with no scripts: the email is shown, never run
+                    viewer.replaceChildren(h("iframe", {
+                        sandbox: "allow-popups allow-popups-to-escape-sandbox", title: "Email body",
+                        srcdoc: `<!doctype html><meta charset="utf-8"><base target="_blank"><body style="margin:16px;font:14px/1.5 -apple-system,system-ui,sans-serif;color:#18181b;background:#fff">${content}</body>`,
+                    }));
+                }
+            };
+            show(0);
+        }
+
         // ---------- Loading ----------
-
-        function setBusy(busy) {
-            $("submit").disabled = busy;
-            $("add-row").disabled = busy;
-            if (hot) hot.updateSettings({ readOnly: busy });
-        }
-
-        function showBanner(kind, text) {
-            const el = $("banner");
-            el.className = `banner show ${kind}`;
-            el.textContent = text;
-        }
-
-        function hideBanner() { $("banner").className = "banner"; }
 
         async function load() {
             const res = await fetch(API);
@@ -676,38 +1105,38 @@
             if (!res.ok) throw new Error(body.error || `Could not load line items (HTTP ${res.status})`);
 
             projects = body.projects;
-            groups = body.groups.map((g) => ({ name: g.name, partNumber: g.partNumber }));
+            groups = body.groups.map((g) => ({ name: g.name, partNumber: g.partNumber, existing: g.existing, project: g.project }));
+            existing = body.existing || [];
+            loadEdits();
+            // Drop edits for assemblies that are gone
+            for (const key of Object.keys(existingEdits)) if (!existing.some((e) => e.key === key)) delete existingEdits[key];
+            storeEdits();
+
             records.clear();
-            rows.length = 0;
+            selected.clear();
+            rows = [];
             for (const r of body.rows) {
-                const rec = register({ ...r, parent: "", _error: "" });
-                rec.parent = parentOf(rec);
-                // With a single project on the PO there is nothing to choose, so fill it in
+                const rec = register({ ...r });
+                // With one project on the PO there is nothing to choose, so fill it in
                 if (!rec.project && projects.length === 1) {
                     rec.project = projects[0];
                     markDirty(rec, ["project"]);
                 }
                 rows.push(rec);
             }
+            if (!rows.length && !existing.length && projects.length) rows.push(newRecord());
 
-            const po = body.po;
-            $("po-meta").textContent = [po.poNumber && `PO ${po.poNumber}`, po.customer].filter(Boolean).join(" · ");
-            if (!projects.length) {
-                showBanner("info", "This PO has no projects in \"Added To Projects\" yet, so items can't be submitted. Add the PO to a project first.");
-            } else if (!rows.length) {
-                showBanner("info", body.submittedCount
-                    ? "Every line item on this PO has been submitted. Use + Add row to add more."
-                    : "No line items were extracted for this PO. Use + Add row to add them.");
-            }
-
-            if (hot) hot.loadData(rows); else buildGrid();
-            if (hasDirty()) scheduleSave(); else setStatus("saved", "All changes saved");
-            setBusy(false);
+            if (!document.querySelector("#doc-tabs .tab")) renderDocs(body.po);
+            $("loading").hidden = true;
+            $("table").hidden = false;
+            render();
+            if (hasDirty()) scheduleSave(); else setStatus("saved", "Saved");
         }
 
         (async function init() {
             if (!PO_ROW_ID) {
                 $("loading").textContent = "Open this page from the PO in Glide (the link must include ?po=<PO row ID>).";
+                $("viewer").replaceChildren(h("div", { class: "empty" }, "No PO selected."));
                 setStatus("error", "No PO");
                 return;
             }
@@ -715,8 +1144,8 @@
                 await load();
             } catch (err) {
                 console.error(err);
-                $("loading").textContent = "";
-                showBanner("error", `${err.message}\n\nReload the page to try again.`);
+                $("loading").textContent = `${err.message}. Reload the page to try again.`;
+                $("viewer").replaceChildren(h("div", { class: "empty" }, "Could not load the PO."));
                 setStatus("error", "Not loaded");
             }
         })();

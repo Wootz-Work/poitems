@@ -69,6 +69,8 @@ PO_CUSTOMER = "6VtPa"
 PO_ACCEPTED = "K1Nbh"
 PO_APPROVED_BY = "zuGSm"
 PO_APPROVED_AT = "Kygc4"
+PO_ATTACHMENT_IDS = "XOAZw"  # Google Drive file ids, comma separated
+PO_BODY = "Name"  # the PO email's body
 
 # Drawings table
 DWG = {
@@ -90,6 +92,7 @@ ASM = {
     "project": "5DWpY",
     "partNumber": "Name",
     "partName": "Mzfxa",
+    "quantity": "Jby1Y",
     "category": "jdTVs",
     "drawing": "yfaWu",
     "currentStatus": "Jgyps",
@@ -111,6 +114,8 @@ CP = {
 
 # Same constant the extractor writes for every row
 CURRENT_STATUS = "Mfg"
+# Status set on an existing assembly (and its drawing) that is removed from a project
+CANCELLED_STATUS = "Cancelled"
 
 STRING_FIELDS = {"partNumber", "partName", "groupName", "project"}
 BOOL_FIELDS = {"partOfGroup", "rejected", "groupMaster"}
@@ -305,7 +310,7 @@ def admin_emails(users, role):
 def submitted_email(po, submitted_by, units):
     """Static body for now; the wording will be replaced later."""
     po_number = _text(po.get(PO_NUMBER)) or "(no PO number)"
-    projects = sorted({unit["mutations"][0]["columnValues"][ASM["project"]] for unit in units})
+    projects = sorted({unit["project"] for unit in units})
     subject = f"Assemblies added for PO {po_number}"
     body = (
         "Hi,\n\n"
@@ -404,7 +409,118 @@ def is_blank(item):
     return not item["partNumber"] and not item["partName"] and item["quantity"] is None
 
 
-def build_submit_plan(items, projects):
+def to_number(value):
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        number = float(value)
+    else:
+        try:
+            number = float(_text(value))
+        except ValueError:
+            return None
+    return int(number) if number.is_integer() else number
+
+
+def parse_attachment_ids(value):
+    return [part.strip() for part in _text(value).split(",") if part.strip()]
+
+
+# --- Existing assemblies -------------------------------------------------------------
+
+def part_key(project, part_number):
+    return (_text(project).lower(), _text(part_number).lower())
+
+
+def load_existing(projects, assemblies, children, drawings):
+    """
+    What is already in the PO's projects: standalone assemblies, and the children of package
+    (group) assemblies. Cancelled assemblies are left out.
+    Returns {"items": [...], "groups": [...]}; an item's quantity comes from its Assemblies row
+    (standalone, falling back to its drawing) or its Child Parts row (children).
+    """
+    wanted = {p.lower() for p in projects}
+    drawing_by_key = {}
+    for row in drawings:
+        drawing_by_key.setdefault(part_key(row.get(DWG["project"]), row.get(DWG["partNumber"])), row)
+
+    items, groups = [], {}
+    for row in assemblies:
+        project = _text(row.get(ASM["project"]))
+        if project.lower() not in wanted or _text(row.get(ASM["currentStatus"])).lower() == CANCELLED_STATUS.lower():
+            continue
+        part_number = _text(row.get(ASM["partNumber"]))
+        part_name = _text(row.get(ASM["partName"]))
+        if row.get(ASM["packageAssembly"]):
+            groups[part_key(project, part_number)] = {
+                "name": part_name or part_number, "partNumber": part_number, "project": project,
+                "rowId": row.get("$rowID"), "childCount": 0,
+            }
+            continue
+        drawing = drawing_by_key.get(part_key(project, part_number)) or {}
+        items.append({
+            "key": f"a:{row.get('$rowID')}", "kind": "assembly", "rowId": row.get("$rowID"),
+            "project": project, "partNumber": part_number, "partName": part_name,
+            "quantity": to_number(row.get(ASM["quantity"])) if to_number(row.get(ASM["quantity"])) is not None
+            else to_number(drawing.get(DWG["quantity"])),
+            "parent": "",
+            "drawingRowId": drawing.get("$rowID"),
+        })
+
+    for row in children:
+        project = _text(row.get(CP["project"]))
+        group = groups.get(part_key(project, row.get(CP["parentDrawingNumber"])))
+        if not group:
+            continue  # not a child of a group assembly in these projects
+        group["childCount"] += 1
+        part_number = _text(row.get(CP["drawingNumber"])) or _text(row.get(CP["partNumber"]))
+        drawing = drawing_by_key.get(part_key(project, part_number)) or {}
+        items.append({
+            "key": f"c:{row.get('$rowID')}", "kind": "child", "rowId": row.get("$rowID"),
+            "project": project, "partNumber": part_number, "partName": _text(row.get(CP["description"])),
+            "quantity": to_number(row.get(CP["quantity"])), "parent": group["name"],
+            "drawingRowId": drawing.get("$rowID"),
+        })
+    return {"items": items, "groups": list(groups.values())}
+
+
+def existing_mutations(item, quantity=None, part_name=None, remove=False):
+    """Mutations that change an existing assembly or child: quantity, name, or removal."""
+    def set_cols(table, row_id, values):
+        return {"kind": "set-columns-in-row", "tableName": table, "rowID": row_id, "columnValues": values}
+
+    is_child = item["kind"] == "child"
+    mutations = []
+    if remove:
+        if is_child:
+            mutations.append({"kind": "delete-row", "tableName": CHILD_PARTS_TABLE, "rowID": item["rowId"]})
+        else:
+            mutations.append(set_cols(ASSEMBLIES_TABLE, item["rowId"], {ASM["currentStatus"]: CANCELLED_STATUS}))
+        if item["drawingRowId"]:
+            mutations.append(set_cols(DRAWINGS_TABLE, item["drawingRowId"], {DWG["currentStatus"]: CANCELLED_STATUS}))
+        return mutations
+    if quantity is not None and quantity != item["quantity"]:
+        if is_child:
+            mutations.append(set_cols(CHILD_PARTS_TABLE, item["rowId"], {CP["quantity"]: format_quantity(quantity)}))
+        else:
+            mutations.append(set_cols(ASSEMBLIES_TABLE, item["rowId"], {ASM["quantity"]: quantity}))
+        if item["drawingRowId"]:
+            mutations.append(set_cols(DRAWINGS_TABLE, item["drawingRowId"], {DWG["quantity"]: quantity}))
+    if part_name is not None and _text(part_name) and _text(part_name) != item["partName"]:
+        name = _text(part_name)
+        if is_child:
+            mutations.append(set_cols(CHILD_PARTS_TABLE, item["rowId"], {CP["description"]: name}))
+        else:
+            mutations.append(set_cols(ASSEMBLIES_TABLE, item["rowId"], {ASM["partName"]: name}))
+        if item["drawingRowId"]:
+            mutations.append(set_cols(DRAWINGS_TABLE, item["drawingRowId"], {DWG["partName"]: name}))
+    return mutations
+
+
+EMPTY_EXISTING = {"items": [], "groups": []}
+
+
+def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
     """
     Turns the PO's line items into Glide work.
 
@@ -414,7 +530,20 @@ def build_submit_plan(items, projects):
     lists the drawings to add for it; those are written after the unit, since they need the
     new assembly's row id.
     `errors` is a list of {rowId, message}; the plan must not run when it is non-empty.
+
+    `existing` (load_existing) changes what a line item becomes: one whose project and assembly
+    number already exist updates that assembly's quantity instead of creating it, and a group
+    whose name matches an existing group assembly in its project adds its members to that
+    assembly. `changes` are the page's edits to existing assemblies:
+    [{"key", "quantity"?, "partName"?, "remove"?}].
     """
+    existing_by_part = {part_key(i["project"], i["partNumber"]): i for i in existing["items"]}
+    existing_by_key = {i["key"]: i for i in existing["items"]}
+    existing_groups = {}
+    for g in existing["groups"]:
+        existing_groups.setdefault(part_key(g["project"], g["name"]), g)
+        existing_groups.setdefault(part_key(g["project"], g["partNumber"]), g)
+
     open_items = [i for i in items if is_open(i)]
     masters = {}
     for item in open_items:
@@ -422,11 +551,13 @@ def build_submit_plan(items, projects):
             masters.setdefault(group_key(item["groupName"]), item)
 
     errors = []
-    standalone, groups = [], {}
+    standalone, groups, matched = [], {}, []
     for item in open_items:
         if item["groupMaster"] or is_blank(item):
             continue
-        if item["partOfGroup"] and item["groupName"]:
+        if item["project"] and part_key(item["project"], item["partNumber"]) in existing_by_part:
+            matched.append(item)
+        elif item["partOfGroup"] and item["groupName"]:
             groups.setdefault(group_key(item["groupName"]), []).append(item)
         else:
             standalone.append(item)
@@ -437,18 +568,19 @@ def build_submit_plan(items, projects):
         elif projects and item["project"] not in projects:
             errors.append({"rowId": item["rowId"], "message": f"Project \"{item['project']}\" is not on this PO"})
 
-    for item in standalone:
+    def check_required(item):
         if not item["partNumber"]:
             errors.append({"rowId": item["rowId"], "message": "Assembly number is required"})
+        if item["quantity"] is None or item["quantity"] <= 0:
+            errors.append({"rowId": item["rowId"], "message": "Quantity is required"})
         check_project(item)
+
+    for item in standalone + matched:
+        check_required(item)
 
     for key, members in groups.items():
         for item in members:
-            if not item["partNumber"]:
-                errors.append({"rowId": item["rowId"], "message": "Assembly number is required"})
-            if item["quantity"] is None or item["quantity"] <= 0:
-                errors.append({"rowId": item["rowId"], "message": "Quantity is required for an item in a group"})
-            check_project(item)
+            check_required(item)
         member_projects = {m["project"] for m in members if m["project"]}
         if len(member_projects) > 1:
             name = members[0]["groupName"]
@@ -457,6 +589,20 @@ def build_submit_plan(items, projects):
                     "rowId": item["rowId"],
                     "message": f"All items in \"{name}\" must go to the same project",
                 })
+
+    matched_keys = {existing_by_part[part_key(i["project"], i["partNumber"])]["key"] for i in matched}
+    edits = []
+    for change in changes:
+        item = existing_by_key.get(change.get("key"))
+        if not item or item["key"] in matched_keys:
+            continue  # gone since the page loaded, or updated by its PO line instead
+        quantity = change.get("quantity")
+        if quantity is not None:
+            quantity = to_number(quantity)
+            if quantity is None or quantity <= 0:
+                errors.append({"rowId": item["key"], "message": "Quantity must be a number above 0"})
+                continue
+        edits.append((item, quantity, change.get("partName"), bool(change.get("remove"))))
 
     if errors:
         return [], errors
@@ -469,13 +615,15 @@ def build_submit_plan(items, projects):
             "columnValues": {LI["addedAsAssembly"]: True, LI["project"]: project},
         }
 
-    def assembly_row(project, part_number, part_name, package, source):
+    def assembly_row(project, part_number, part_name, package, source, quantity):
         values = {
             ASM["project"]: project,
             ASM["partNumber"]: part_number,
             ASM["partName"]: part_name,
             ASM["packageAssembly"]: package,
         }
+        if quantity is not None:
+            values[ASM["quantity"]] = quantity
         if source:
             values[ASM["extractedRowId"]] = source["rowId"]
             if source["category"]:
@@ -499,13 +647,40 @@ def build_submit_plan(items, projects):
         }
 
     units = []
+    for item in matched:
+        target = existing_by_part[part_key(item["project"], item["partNumber"])]
+        units.append({
+            "kind": "update",
+            "project": item["project"],
+            "label": item["partNumber"],
+            "rowIds": [item["rowId"]],
+            "quantityUpdate": item["quantity"] != target["quantity"],
+            "mutations": existing_mutations(target, quantity=item["quantity"]) + [mark_submitted(item["rowId"], item["project"])],
+            "drawings": [],
+        })
+
+    for item, quantity, part_name, remove in edits:
+        mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove)
+        if mutations:
+            units.append({
+                "kind": "edit",
+                "project": item["project"],
+                "label": item["partNumber"],
+                "rowIds": [],
+                "removal": remove,
+                "quantityUpdate": not remove and quantity is not None and quantity != item["quantity"],
+                "mutations": mutations,
+                "drawings": [],
+            })
+
     for item in standalone:
         units.append({
             "kind": "standalone",
+            "project": item["project"],
             "label": item["partNumber"],
             "rowIds": [item["rowId"]],
             "mutations": [
-                assembly_row(item["project"], item["partNumber"], item["partName"], False, item),
+                assembly_row(item["project"], item["partNumber"], item["partName"], False, item, item["quantity"]),
                 mark_submitted(item["rowId"], item["project"]),
             ],
             "drawings": [drawing(item["project"], item["partNumber"], item["partName"], item["quantity"], item)],
@@ -514,11 +689,17 @@ def build_submit_plan(items, projects):
     for key, members in groups.items():
         master = masters.get(key)
         name = members[0]["groupName"]
-        part_number = (master and master["partNumber"]) or name
-        part_name = (master and master["partName"]) or name
         project = members[0]["project"]
-        mutations = [assembly_row(project, part_number, part_name, True, master)]
-        for index, item in enumerate(members, start=1):
+        target = existing_groups.get(part_key(project, name))
+        if target:
+            # The group already exists in this project: its members become more of its children
+            part_number, part_name = target["partNumber"], target["name"]
+            mutations, first_item = [], target["childCount"] + 1
+        else:
+            part_number = (master and master["partNumber"]) or name
+            part_name = (master and master["partName"]) or name
+            mutations, first_item = [assembly_row(project, part_number, part_name, True, master, 1)], 1
+        for index, item in enumerate(members, start=first_item):
             mutations.append({
                 "kind": "add-row-to-table",
                 "tableName": CHILD_PARTS_TABLE,
@@ -536,16 +717,17 @@ def build_submit_plan(items, projects):
         if master:
             row_ids.append(master["rowId"])
         mutations.extend(mark_submitted(row_id, project) for row_id in row_ids)
+        child_drawings = [drawing(project, item["partNumber"], item["partName"], item["quantity"], item) for item in members]
         units.append({
-            "kind": "group",
+            "kind": "existing-group" if target else "group",
+            "project": project,
             "label": part_number,
             "rowIds": row_ids,
             "childParts": len(members),
             "mutations": mutations,
-            # The group's own drawing, then one per child, all linked to the group's assembly row
-            "drawings": [drawing(project, part_number, part_name, 1, master)] + [
-                drawing(project, item["partNumber"], item["partName"], item["quantity"], item) for item in members
-            ],
+            # The group's own drawing (new groups only), then one per child, all linked to the group's assembly row
+            "drawings": child_drawings if target else [drawing(project, part_number, part_name, 1, master)] + child_drawings,
+            "fixedAssemblyRowId": target["rowId"] if target else None,
         })
 
     return units, []
@@ -643,6 +825,16 @@ async def _load_po(glide, po_row_id):
     return next((r for r in rows if r.get("$rowID") == po_row_id), None)
 
 
+async def _load_existing(glide, po):
+    projects = parse_projects(po.get(PO_PROJECTS))
+    if not projects:
+        return EMPTY_EXISTING, []
+    assemblies, children, drawings = await asyncio.gather(
+        glide.query(ASSEMBLIES_TABLE), glide.query(CHILD_PARTS_TABLE), glide.query(DRAWINGS_TABLE)
+    )
+    return load_existing(projects, assemblies, children, drawings), drawings
+
+
 async def _owns(glide, po_row_id, row_ids):
     if row_ids <= _owned.get(po_row_id, set()):
         return True
@@ -655,16 +847,20 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
     started = time.monotonic()
     try:
         items, po = await asyncio.gather(_load_items(glide, po_row_id), _load_po(glide, po_row_id))
+        if po is None:
+            return _error(404, "Purchase order not found")
+        existing, _ = await _load_existing(glide, po)
     except httpx.HTTPError as e:
         logger.exception("po-assemblies load failed")
         return _error(502, f"Could not load from Glide: {e}")
-    if po is None:
-        return _error(404, "Purchase order not found")
 
     open_items = [i for i in items if is_open(i)]
     groups = [
-        {"name": i["groupName"], "partNumber": i["partNumber"], "rowId": i["rowId"], "project": i["project"]}
+        {"name": i["groupName"], "partNumber": i["partNumber"], "rowId": i["rowId"], "project": i["project"], "existing": False}
         for i in open_items if i["groupMaster"] and i["groupName"]
+    ] + [
+        {"name": g["name"], "partNumber": g["partNumber"], "rowId": g["rowId"], "project": g["project"], "existing": True}
+        for g in existing["groups"]
     ]
     rows = [
         {key: i[key] for key in ("rowId", "partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "category")}
@@ -672,10 +868,20 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
     ]
     logger.info("po-assemblies %s: %d rows, %d groups in %.2fs", po_row_id, len(rows), len(groups), time.monotonic() - started)
     return {
-        "po": {"rowId": po_row_id, "poNumber": _text(po.get(PO_NUMBER)), "customer": _text(po.get(PO_CUSTOMER))},
+        "po": {
+            "rowId": po_row_id,
+            "poNumber": _text(po.get(PO_NUMBER)),
+            "customer": _text(po.get(PO_CUSTOMER)),
+            "attachmentIds": parse_attachment_ids(po.get(PO_ATTACHMENT_IDS)),
+            "emailBody": _text(po.get(PO_BODY)),
+        },
         "projects": parse_projects(po.get(PO_PROJECTS)),
         "groups": groups,
         "rows": rows,
+        "existing": [
+            {key: i[key] for key in ("key", "kind", "project", "partNumber", "partName", "quantity", "parent")}
+            for i in existing["items"]
+        ],
         "submittedCount": sum(1 for i in items if i["addedAsAssembly"] and not i["groupMaster"]),
     }
 
@@ -744,7 +950,8 @@ async def submit_po_assemblies(
     mailer=Depends(get_mailer),
 ):
     """
-    Body (optional): {"user": "<email of the person submitting>"}.
+    Body (optional): {"user": "<email of the person submitting>",
+                      "existingChanges": [{"key", "quantity"?, "partName"?, "remove"?}]}.
     Order: placeholder PDFs are uploaded first, so a storage failure writes nothing to Glide. Then
     each batch of assemblies, child parts and line-item marks; then the drawings (they need the new
     assemblies' row ids) and the PO approval; then the email.
@@ -753,20 +960,24 @@ async def submit_po_assemblies(
         body = await request.json()
     except ValueError:
         body = {}
-    submitted_by = _text(body.get("user")) if isinstance(body, dict) else ""
+    if not isinstance(body, dict):
+        body = {}
+    submitted_by = _text(body.get("user"))
+    changes = body.get("existingChanges") or []
+    if not isinstance(changes, list) or not all(isinstance(c, dict) for c in changes):
+        return _error(400, "existingChanges must be a list of objects")
 
     async with _lock(po_row_id):
         try:
-            items, po, existing_drawings = await asyncio.gather(
-                _load_items(glide, po_row_id), _load_po(glide, po_row_id), glide.query(DRAWINGS_TABLE)
-            )
+            items, po = await asyncio.gather(_load_items(glide, po_row_id), _load_po(glide, po_row_id))
+            if po is None:
+                return _error(404, "Purchase order not found")
+            existing, existing_drawings = await _load_existing(glide, po)
         except httpx.HTTPError as e:
             logger.exception("po-assemblies submit load failed")
             return _error(502, f"Could not load from Glide: {e}")
-        if po is None:
-            return _error(404, "Purchase order not found")
 
-        units, errors = build_submit_plan(items, parse_projects(po.get(PO_PROJECTS)))
+        units, errors = build_submit_plan(items, parse_projects(po.get(PO_PROJECTS)), existing, changes)
         if errors:
             return _error(400, "Fix the highlighted rows before submitting", rowErrors=errors)
         if not units:
@@ -792,8 +1003,11 @@ async def submit_po_assemblies(
                 break
             offset = 0
             for unit in batch:
-                # The assembly row is each unit's first mutation
-                unit["assemblyRowId"] = (results[offset] or {}).get("rowID") if offset < len(results) else None
+                # A new group's or standalone's assembly row is its first mutation
+                if unit.get("fixedAssemblyRowId"):
+                    unit["assemblyRowId"] = unit["fixedAssemblyRowId"]
+                elif unit["kind"] in ("standalone", "group") and offset < len(results):
+                    unit["assemblyRowId"] = (results[offset] or {}).get("rowID")
                 offset += len(unit["mutations"])
             done.extend(batch)
 
@@ -838,6 +1052,8 @@ async def submit_po_assemblies(
         "standaloneAssemblies": sum(1 for u in done if u["kind"] == "standalone"),
         "groupAssemblies": sum(1 for u in done if u["kind"] == "group"),
         "childParts": sum(u.get("childParts", 0) for u in done),
+        "quantityUpdates": sum(1 for u in done if u.get("quantityUpdate")),
+        "removals": sum(1 for u in done if u.get("removal")),
         "drawingsCreated": sum(1 for j in jobs if not j["existingRowId"]),
         "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),
         "emailSent": email_sent,

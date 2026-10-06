@@ -159,6 +159,8 @@
             Edits save automatically. Set <b>Parent assembly</b> to group items under one assembly
             (they become its child parts), or leave it on Standalone to create the item as its own assembly.
             Right-click a row to remove it.
+            <br />Drawings are not needed now: submitting creates a placeholder drawing for every assembly and
+            child part, and you can replace them with the original drawings later.
         </p>
         <div id="grid-wrap">
             <div id="loading">Loading line items…</div>
@@ -193,6 +195,8 @@
     <script>
         const params = new URLSearchParams(location.search);
         const PO_ROW_ID = params.get("po") || params.get("poRowID") || params.get("rowID");
+        // Email of the signed-in Glide user, recorded as "PO Approved By" and CC'd on the email
+        const USER_EMAIL = params.get("user") || params.get("email") || "";
         // The PO Assemblies Render service (backend/po_app.py); ?api= overrides it for testing
         const API_BASE = (params.get("api") || "https://po-assemblies.onrender.com").replace(/\/$/, "");
         const API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}`;
@@ -568,7 +572,7 @@
                 } else standalone++;
             }
             const children = [...grouped.values()].reduce((a, b) => a + b, 0);
-            return { standalone, groups: grouped.size, children };
+            return { standalone, groups: grouped.size, children, drawings: standalone + grouped.size + children };
         }
 
         function openConfirm() {
@@ -583,7 +587,9 @@
             ].forEach((text) => { const li = document.createElement("li"); li.textContent = text; list.appendChild(li); });
             body.appendChild(list);
             const p = document.createElement("p");
-            p.textContent = "Submitted items are removed from this table.";
+            p.textContent = `A placeholder drawing will be created for each of the ${s.drawings} parts; ` +
+                "you can replace them with the original drawings later. The PO will be marked as accepted, " +
+                "and submitted items are removed from this table.";
             body.appendChild(p);
             $("confirm-modal").classList.add("show");
         }
@@ -595,7 +601,11 @@
             try {
                 if (!(await flushAll())) throw new Error("Your latest edits could not be saved. Check your connection and try again.");
                 setStatus("", "Submitting…");
-                const res = await fetch(`${API}/submit`, { method: "POST" });
+                const res = await fetch(`${API}/submit`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ user: USER_EMAIL }),
+                });
                 const body = await res.json().catch(() => ({}));
                 if (!res.ok) {
                     if (body.rowErrors) showRowErrors(body.rowErrors);
@@ -606,8 +616,19 @@
                     `${body.groupAssemblies} parent assembl${body.groupAssemblies === 1 ? "y" : "ies"}`,
                     `${body.childParts} child part${body.childParts === 1 ? "" : "s"}`,
                 ];
+                const drawings = body.drawingsCreated + body.drawingsUpdated;
                 await load();
-                showBanner("ok", `Submitted: ${parts.join(", ")}.`);
+                let message = `Submitted: ${parts.join(", ")}.`;
+                if (drawings) {
+                    message += `\n${body.drawingsCreated} placeholder drawing(s) created` +
+                        (body.drawingsUpdated ? `, ${body.drawingsUpdated} existing drawing(s) updated` : "") +
+                        ". You can replace the placeholders with the original drawings later.";
+                }
+                if (body.warnings && body.warnings.length) {
+                    showBanner("error", `${message}\n\n${body.warnings.join("\n")}`);
+                } else {
+                    showBanner("ok", message);
+                }
             } catch (err) {
                 showBanner("error", err.message);
                 setStatus("saved", "All changes saved");

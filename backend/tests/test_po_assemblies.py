@@ -24,6 +24,11 @@ class FakeGlide:
             pa.PO_TABLE: [{"$rowID": PO, pa.PO_PROJECTS: projects, pa.PO_NUMBER: "PO-77", pa.PO_CUSTOMER: "Acme"}],
             pa.ASSEMBLIES_TABLE: [],
             pa.CHILD_PARTS_TABLE: [],
+            pa.DRAWINGS_TABLE: [],
+            pa.USERS_TABLE: [
+                {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin"},
+                {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User"},
+            ],
         }
         self.calls = []
         self.next_id = 0
@@ -54,10 +59,35 @@ def reset_state():
     pa._locks.clear()
 
 
-def client_for(glide):
+class FakeUploader:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.uploads = []
+
+    async def upload_pdf(self, project, part_number, data):
+        if self.fail:
+            raise RuntimeError("cloudinary down")
+        assert data.startswith(b"%PDF")
+        self.uploads.append((project, part_number))
+        return f"https://files.test/{pa.safe_file_name(project)}/{pa.safe_file_name(part_number)}.pdf"
+
+
+class FakeMailer:
+    def __init__(self, enabled=False):
+        self.enabled = enabled
+        self.admin_role = "Admin"
+        self.sent = []
+
+    async def send(self, to, cc, subject, body):
+        self.sent.append((to, cc, subject, body))
+
+
+def client_for(glide, uploader=None, mailer=None):
     app = FastAPI()
     app.include_router(pa.router)
     app.dependency_overrides[pa.get_glide] = lambda: glide
+    app.dependency_overrides[pa.get_uploader] = lambda: uploader or FakeUploader()
+    app.dependency_overrides[pa.get_mailer] = lambda: mailer or FakeMailer()
     return TestClient(app)
 
 
@@ -136,9 +166,13 @@ def test_submit_creates_assemblies_and_child_parts():
     for row in items[:4]:
         row[pa.LI["project"]] = "Proj A"
     glide = FakeGlide(items)
-    res = client_for(glide).post(f"/po-assemblies/{PO}/submit")
+    uploader = FakeUploader()
+    res = client_for(glide, uploader).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
     assert res.status_code == 200, res.text
-    assert res.json() == {"standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2}
+    assert res.json() == {
+        "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
+        "drawingsCreated": 4, "drawingsUpdated": 0, "emailSent": False, "warnings": [],
+    }
 
     assemblies = glide.tables[pa.ASSEMBLIES_TABLE]
     assert [(a[pa.ASM["partNumber"]], a[pa.ASM["packageAssembly"]], a[pa.ASM["extractedRowId"]]) for a in assemblies] == [
@@ -175,3 +209,82 @@ def test_new_group_without_master_uses_its_name():
 def test_batches_never_split_a_unit():
     units = [{"mutations": [None] * 300}, {"mutations": [None] * 300}, {"mutations": [None] * 100}]
     assert [len(b) for b in pa.batch_units(units)] == [1, 2]
+
+
+def submittable_items():
+    items = sample_items()
+    for row in items[:4]:
+        row[pa.LI["project"]] = "Proj A"
+    return items
+
+
+def test_submit_adds_drawings_linked_to_assemblies():
+    glide = FakeGlide(submittable_items())
+    uploader = FakeUploader()
+    assert client_for(glide, uploader).post(f"/po-assemblies/{PO}/submit").status_code == 200
+
+    assemblies = {a[pa.ASM["partNumber"]]: a["$rowID"] for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    drawings = [
+        (d[pa.DWG["partNumber"]], d[pa.DWG["partName"]], d[pa.DWG["quantity"]], d[pa.DWG["assemblyRowId"]], d[pa.DWG["drawing"]])
+        for d in glide.tables[pa.DRAWINGS_TABLE]
+    ]
+    group = assemblies["WZ_Fasteners_061026"]
+    assert drawings == [
+        ("P-100", "Frame", 2, assemblies["P-100"], "https://files.test/Proj A/P-100.pdf"),
+        ("WZ_Fasteners_061026", "Fasteners", 1, group, "https://files.test/Proj A/WZ_Fasteners_061026.pdf"),
+        ("B-1", "Bolt", 10, group, "https://files.test/Proj A/B-1.pdf"),
+        ("N-1", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
+    ]
+    assert all(d[pa.DWG["project"]] == "Proj A" and d[pa.DWG["currentStatus"]] == "Mfg" for d in glide.tables[pa.DRAWINGS_TABLE])
+    assert len(uploader.uploads) == 4
+
+
+def test_existing_drawing_is_updated_not_duplicated():
+    glide = FakeGlide(submittable_items())
+    glide.tables[pa.DRAWINGS_TABLE].append(
+        {"$rowID": "dw1", pa.DWG["project"]: "proj a", pa.DWG["partNumber"]: "b-1", pa.DWG["drawing"]: "https://real.pdf"}
+    )
+    uploader = FakeUploader()
+    res = client_for(glide, uploader).post(f"/po-assemblies/{PO}/submit")
+    assert res.json()["drawingsCreated"] == 3
+    assert res.json()["drawingsUpdated"] == 1
+    existing = glide.tables[pa.DRAWINGS_TABLE][0]
+    assert existing[pa.DWG["quantity"]] == 10
+    assert existing[pa.DWG["currentStatus"]] == "Mfg"
+    assert existing[pa.DWG["drawing"]] == "https://real.pdf"
+    assert ("Proj A", "B-1") not in uploader.uploads
+
+
+def test_submit_marks_po_accepted():
+    glide = FakeGlide(submittable_items())
+    client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
+    po = glide.tables[pa.PO_TABLE][0]
+    assert po[pa.PO_ACCEPTED] is True
+    assert po[pa.PO_APPROVED_BY] == "dev@x.com"
+    assert po[pa.PO_APPROVED_AT].endswith("Z")
+
+
+def test_upload_failure_writes_nothing():
+    glide = FakeGlide(submittable_items())
+    res = client_for(glide, FakeUploader(fail=True)).post(f"/po-assemblies/{PO}/submit")
+    assert res.status_code == 502
+    assert glide.calls == []
+
+
+def test_email_is_off_by_default_and_goes_to_admins_cc_submitter_when_on():
+    off = FakeMailer(enabled=False)
+    client_for(FakeGlide(submittable_items()), mailer=off).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
+    assert off.sent == []
+
+    on = FakeMailer(enabled=True)
+    res = client_for(FakeGlide(submittable_items()), mailer=on).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
+    assert res.json()["emailSent"] is True
+    to, cc, subject, body = on.sent[0]
+    assert to == ["boss@x.com"] and cc == ["dev@x.com"]
+    assert "PO-77" in subject
+
+
+def test_placeholder_pdf_handles_non_latin_text():
+    data = pa.placeholder_pdf("Ø12-A/3", "Bracket \u2264 5mm")
+    assert data.startswith(b"%PDF")
+    assert pa.safe_file_name("Ø12-A/3") == "Ø12-A-3"

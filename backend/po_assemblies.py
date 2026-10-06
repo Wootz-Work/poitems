@@ -6,15 +6,23 @@ Glide "Extracted PO Items" table for one PO, lets the user edit them and pick a 
 assembly (a group) and a project for each, and then creates:
 
 - one Assemblies row per standalone item, and
-- one Assemblies row per group, with each member added to Child Parts under it.
+- one Assemblies row per group, with each member added to Child Parts under it,
+- a Drawings row for every assembly and child, with a placeholder PDF to be replaced later,
+
+and marks the PO as accepted.
 
 Every edit is saved straight back to the Extracted PO Items table, so that table is the
 working copy and nothing is lost when the page is closed before submitting.
 """
 import asyncio
+import io
 import logging
 import os
+import re
+import smtplib
 import time
+from datetime import datetime, timezone
+from email.message import EmailMessage
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -30,6 +38,8 @@ LINE_ITEMS_TABLE = "native-table-d92757f1-325f-4ec8-87a0-98569c3e215a"
 PO_TABLE = "native-table-992ebb81-8eed-4e60-b723-aa4e0efa6af5"
 ASSEMBLIES_TABLE = "native-table-0GrR50EycwTGYCIFfPMT"
 CHILD_PARTS_TABLE = "native-table-3HZdeQgfDL37ac2rc3kF"
+DRAWINGS_TABLE = "native-table-unGdNRqsjTPlBDZB2629"
+USERS_TABLE = "native-table-UDMQGdMm5t2u9QY1DxE5"
 
 # Extracted PO Items table: code key -> Glide column id
 LI = {
@@ -56,6 +66,24 @@ LI = {
 PO_PROJECTS = "4L30B"  # "Added To Projects", comma separated
 PO_NUMBER = "VGJKq"
 PO_CUSTOMER = "6VtPa"
+PO_ACCEPTED = "K1Nbh"
+PO_APPROVED_BY = "zuGSm"
+PO_APPROVED_AT = "Kygc4"
+
+# Drawings table
+DWG = {
+    "partNumber": "nlHAO",
+    "project": "VQlMl",
+    "partName": "Name",
+    "drawing": "9iB5E",
+    "quantity": "zbUI2",
+    "currentStatus": "Sjgh3",
+    "assemblyRowId": "fdWAC",
+}
+
+# Users table
+USER_EMAIL = "Email"
+USER_ROLE = "Role"
 
 # Assemblies table
 ASM = {
@@ -143,6 +171,150 @@ def get_glide():
     if _glide is None:
         _glide = GlideClient(os.getenv("GLIDE_API_KEY"), os.getenv("GLIDE_APP_ID"))
     return _glide
+
+
+# --- Placeholder drawings ---------------------------------------------------------
+
+PLACEHOLDER_NOTE = "Placeholder drawing - replace with the original drawing"
+
+
+def _latin1(text):
+    # The PDF core fonts only cover Latin-1; anything else becomes "?"
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def placeholder_pdf(part_number, part_name):
+    """Portrait A4 page with the part name, part number and a note, centred."""
+    from fpdf import FPDF
+
+    pdf = FPDF(orientation="P", unit="mm", format="A4")
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+    pdf.set_margins(20, 20, 20)
+    pdf.set_y(115)
+    pdf.set_font("Helvetica", size=26)
+    pdf.multi_cell(0, 12, _latin1(part_name or part_number), align="C")
+    pdf.ln(6)
+    pdf.set_font("Helvetica", size=16)
+    pdf.multi_cell(0, 9, _latin1(f"Part number: {part_number}"), align="C")
+    pdf.ln(10)
+    pdf.set_font("Helvetica", size=11)
+    pdf.set_text_color(110, 110, 110)
+    pdf.multi_cell(0, 6, PLACEHOLDER_NOTE, align="C")
+    return bytes(pdf.output())
+
+
+def safe_file_name(name):
+    """Keeps the part number as the file name, minus characters that break a URL path."""
+    return re.sub(r'[\\/?#%&<>:"|*]+', "-", name).strip() or "drawing"
+
+
+class CloudinaryUploader:
+    def __init__(self):
+        import cloudinary
+
+        cloudinary.config(
+            cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+            api_key=os.getenv("CLOUDINARY_API_KEY"),
+            api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+        )
+
+    async def upload_pdf(self, project, part_number, data):
+        import cloudinary.uploader
+
+        result = await asyncio.to_thread(
+            cloudinary.uploader.upload,
+            io.BytesIO(data),
+            resource_type="raw",  # required for PDFs
+            # One folder per project; the file itself is named after the part number
+            public_id=f"po-drawings/{safe_file_name(project)}/{safe_file_name(part_number)}.pdf",
+            overwrite=True,
+        )
+        return result["secure_url"]
+
+
+_uploader = None
+
+
+def get_uploader():
+    global _uploader
+    if _uploader is None:
+        _uploader = CloudinaryUploader()
+    return _uploader
+
+
+# --- Email ---------------------------------------------------------------------------
+
+def _env_flag(name):
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+class Mailer:
+    """
+    Sends the "assemblies added" email over SMTP. Off unless PO_EMAIL_ENABLED is true.
+    Env: SMTP_HOST, SMTP_PORT (587 = STARTTLS, 465 = SSL), SMTP_USER, SMTP_PASSWORD, EMAIL_FROM,
+    PO_EMAIL_ADMIN_ROLE (the Users table role that receives it, default "Admin").
+    """
+
+    def __init__(self):
+        self.enabled = _env_flag("PO_EMAIL_ENABLED")
+        self.admin_role = os.getenv("PO_EMAIL_ADMIN_ROLE", "Admin")
+
+    def _send(self, message):
+        host = os.getenv("SMTP_HOST")
+        port = int(os.getenv("SMTP_PORT", "587"))
+        user, password = os.getenv("SMTP_USER"), os.getenv("SMTP_PASSWORD")
+        smtp_class = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
+        with smtp_class(host, port, timeout=30) as smtp:
+            if port != 465:
+                smtp.starttls()
+            if user:
+                smtp.login(user, password)
+            smtp.send_message(message)
+
+    async def send(self, to, cc, subject, body):
+        message = EmailMessage()
+        message["From"] = os.getenv("EMAIL_FROM") or os.getenv("SMTP_USER")
+        message["To"] = ", ".join(to)
+        if cc:
+            message["Cc"] = ", ".join(cc)
+        message["Subject"] = subject
+        message.set_content(body)
+        await asyncio.to_thread(self._send, message)
+
+
+_mailer = None
+
+
+def get_mailer():
+    global _mailer
+    if _mailer is None:
+        _mailer = Mailer()
+    return _mailer
+
+
+def admin_emails(users, role):
+    emails = []
+    for user in users:
+        email = _text(user.get(USER_EMAIL))
+        if email and _text(user.get(USER_ROLE)).lower() == role.lower() and email not in emails:
+            emails.append(email)
+    return emails
+
+
+def submitted_email(po, submitted_by, units):
+    """Static body for now; the wording will be replaced later."""
+    po_number = _text(po.get(PO_NUMBER)) or "(no PO number)"
+    projects = sorted({unit["mutations"][0]["columnValues"][ASM["project"]] for unit in units})
+    subject = f"Assemblies added for PO {po_number}"
+    body = (
+        "Hi,\n\n"
+        f"The line items of PO {po_number} ({_text(po.get(PO_CUSTOMER))}) have been added as assemblies "
+        f"to {', '.join(projects)} by {submitted_by or 'a user'}.\n\n"
+        "Placeholder drawings were created for every assembly and child part. "
+        "Please replace them with the original drawings.\n"
+    )
+    return subject, body
 
 
 # --- Pure helpers ---------------------------------------------------------------
@@ -238,7 +410,9 @@ def build_submit_plan(items, projects):
 
     Returns (units, errors). Each unit is one standalone item or one group and carries every
     mutation it needs, including marking its line items as submitted, so a unit is either
-    fully written or not written at all as long as it fits in one Glide call.
+    fully written or not written at all as long as it fits in one Glide call. Each unit also
+    lists the drawings to add for it; those are written after the unit, since they need the
+    new assembly's row id.
     `errors` is a list of {rowId, message}; the plan must not run when it is non-empty.
     """
     open_items = [i for i in items if is_open(i)]
@@ -315,6 +489,15 @@ def build_submit_plan(items, projects):
             values[ASM["currentStatus"]] = CURRENT_STATUS
         return {"kind": "add-row-to-table", "tableName": ASSEMBLIES_TABLE, "columnValues": values}
 
+    def drawing(project, part_number, part_name, quantity, source):
+        return {
+            "project": project,
+            "partNumber": part_number,
+            "partName": part_name,
+            "quantity": quantity,
+            "currentStatus": (source and source["currentStatus"]) or CURRENT_STATUS,
+        }
+
     units = []
     for item in standalone:
         units.append({
@@ -325,6 +508,7 @@ def build_submit_plan(items, projects):
                 assembly_row(item["project"], item["partNumber"], item["partName"], False, item),
                 mark_submitted(item["rowId"], item["project"]),
             ],
+            "drawings": [drawing(item["project"], item["partNumber"], item["partName"], item["quantity"], item)],
         })
 
     for key, members in groups.items():
@@ -358,9 +542,60 @@ def build_submit_plan(items, projects):
             "rowIds": row_ids,
             "childParts": len(members),
             "mutations": mutations,
+            # The group's own drawing, then one per child, all linked to the group's assembly row
+            "drawings": [drawing(project, part_number, part_name, 1, master)] + [
+                drawing(project, item["partNumber"], item["partName"], item["quantity"], item) for item in members
+            ],
         })
 
     return units, []
+
+
+def drawing_key(project, part_number):
+    return (_text(project).lower(), _text(part_number).lower())
+
+
+def plan_drawings(units, existing_rows):
+    """
+    Decides, for each unit's drawings, whether to add a row or update the existing one for the
+    same project and part number. Sets unit["drawingJobs"] and returns the jobs that need a PDF.
+    A part number that appears twice in one submit (same project) gets one drawing.
+    """
+    existing = {}
+    for row in existing_rows:
+        existing.setdefault(drawing_key(row.get(DWG["project"]), row.get(DWG["partNumber"])), row.get("$rowID"))
+    seen = set()
+    new_jobs = []
+    for unit in units:
+        unit["drawingJobs"] = []
+        for spec in unit["drawings"]:
+            key = drawing_key(spec["project"], spec["partNumber"])
+            if key in seen:
+                continue
+            seen.add(key)
+            job = {"spec": spec, "existingRowId": existing.get(key), "url": None}
+            unit["drawingJobs"].append(job)
+            if not job["existingRowId"]:
+                new_jobs.append(job)
+    return new_jobs
+
+
+def drawing_mutation(job, assembly_row_id):
+    spec = job["spec"]
+    values = {DWG["currentStatus"]: spec["currentStatus"]}
+    if spec["quantity"] is not None:
+        values[DWG["quantity"]] = spec["quantity"]
+    if job["existingRowId"]:
+        return {"kind": "set-columns-in-row", "tableName": DRAWINGS_TABLE, "rowID": job["existingRowId"], "columnValues": values}
+    values.update({
+        DWG["partNumber"]: spec["partNumber"],
+        DWG["project"]: spec["project"],
+        DWG["partName"]: spec["partName"],
+        DWG["drawing"]: job["url"],
+    })
+    if assembly_row_id:
+        values[DWG["assemblyRowId"]] = assembly_row_id
+    return {"kind": "add-row-to-table", "tableName": DRAWINGS_TABLE, "columnValues": values}
 
 
 def batch_units(units):
@@ -484,11 +719,47 @@ async def save_po_assemblies(po_row_id: str, request: Request, glide: GlideClien
     return {"created": created}
 
 
+# Placeholder PDFs uploaded at the same time
+UPLOAD_CONCURRENCY = 4
+
+
+async def _upload_placeholders(uploader, jobs):
+    limit = asyncio.Semaphore(UPLOAD_CONCURRENCY)
+
+    async def upload(job):
+        spec = job["spec"]
+        async with limit:
+            data = await asyncio.to_thread(placeholder_pdf, spec["partNumber"], spec["partName"])
+            job["url"] = await uploader.upload_pdf(spec["project"], spec["partNumber"], data)
+
+    await asyncio.gather(*(upload(job) for job in jobs))
+
+
 @router.post("/{po_row_id}/submit")
-async def submit_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_glide)):
+async def submit_po_assemblies(
+    po_row_id: str,
+    request: Request,
+    glide: GlideClient = Depends(get_glide),
+    uploader=Depends(get_uploader),
+    mailer=Depends(get_mailer),
+):
+    """
+    Body (optional): {"user": "<email of the person submitting>"}.
+    Order: placeholder PDFs are uploaded first, so a storage failure writes nothing to Glide. Then
+    each batch of assemblies, child parts and line-item marks; then the drawings (they need the new
+    assemblies' row ids) and the PO approval; then the email.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        body = {}
+    submitted_by = _text(body.get("user")) if isinstance(body, dict) else ""
+
     async with _lock(po_row_id):
         try:
-            items, po = await asyncio.gather(_load_items(glide, po_row_id), _load_po(glide, po_row_id))
+            items, po, existing_drawings = await asyncio.gather(
+                _load_items(glide, po_row_id), _load_po(glide, po_row_id), glide.query(DRAWINGS_TABLE)
+            )
         except httpx.HTTPError as e:
             logger.exception("po-assemblies submit load failed")
             return _error(502, f"Could not load from Glide: {e}")
@@ -501,22 +772,77 @@ async def submit_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_
         if not units:
             return _error(400, "Nothing to submit")
 
-        done = []
+        new_jobs = plan_drawings(units, existing_drawings)
+        try:
+            await _upload_placeholders(uploader, new_jobs)
+        except Exception as e:
+            logger.exception("po-assemblies placeholder upload failed")
+            return _error(502, f"Could not create the placeholder drawings, nothing was submitted: {e}")
+
+        done, failure = [], None
         for batch in batch_units(units):
             try:
-                await glide.mutate([m for unit in batch for m in unit["mutations"]])
+                results = await glide.mutate([m for unit in batch for m in unit["mutations"]])
             except httpx.HTTPError as e:
                 logger.exception("po-assemblies submit failed after %d units", len(done))
-                return _error(
-                    502,
+                failure = (
                     f"Glide stopped the submit after {len(done)} of {len(units)} assemblies: {e}. "
-                    "Reload the page: submitted items disappear from the table, the rest can be submitted again.",
-                    submitted=len(done),
+                    "Reload the page: submitted items disappear from the table, the rest can be submitted again."
                 )
+                break
+            offset = 0
+            for unit in batch:
+                # The assembly row is each unit's first mutation
+                unit["assemblyRowId"] = (results[offset] or {}).get("rowID") if offset < len(results) else None
+                offset += len(unit["mutations"])
             done.extend(batch)
 
-    return {
+        warnings = []
+        follow_up = [drawing_mutation(job, unit.get("assemblyRowId")) for unit in done for job in unit["drawingJobs"]]
+        if done and not failure:
+            follow_up.append({
+                "kind": "set-columns-in-row",
+                "tableName": PO_TABLE,
+                "rowID": po_row_id,
+                "columnValues": {
+                    PO_ACCEPTED: True,
+                    PO_APPROVED_BY: submitted_by,
+                    PO_APPROVED_AT: datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+                },
+            })
+        drawings_ok = True
+        if follow_up:
+            try:
+                await glide.mutate(follow_up)
+            except httpx.HTTPError as e:
+                logger.exception("po-assemblies drawings / PO approval failed")
+                drawings_ok = False
+                warnings.append(f"The assemblies were created, but adding their drawings or approving the PO failed: {e}")
+
+        email_sent = False
+        if mailer.enabled and done and not failure:
+            try:
+                users = await glide.query(USERS_TABLE)
+                to = admin_emails(users, mailer.admin_role)
+                cc = [submitted_by] if submitted_by and submitted_by not in to else []
+                if to or cc:
+                    subject, text = submitted_email(po, submitted_by, done)
+                    await mailer.send(to or cc, cc if to else [], subject, text)
+                    email_sent = True
+            except Exception as e:
+                logger.exception("po-assemblies email failed")
+                warnings.append(f"The notification email could not be sent: {e}")
+
+    jobs = [job for unit in done for job in unit["drawingJobs"]] if drawings_ok else []
+    summary = {
         "standaloneAssemblies": sum(1 for u in done if u["kind"] == "standalone"),
         "groupAssemblies": sum(1 for u in done if u["kind"] == "group"),
         "childParts": sum(u.get("childParts", 0) for u in done),
+        "drawingsCreated": sum(1 for j in jobs if not j["existingRowId"]),
+        "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),
+        "emailSent": email_sent,
+        "warnings": warnings,
     }
+    if failure:
+        return _error(502, failure, submitted=len(done), **summary)
+    return summary

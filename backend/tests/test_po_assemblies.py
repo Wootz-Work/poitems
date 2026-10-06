@@ -189,14 +189,14 @@ def test_submit_creates_assemblies_and_child_parts():
     assemblies = glide.tables[pa.ASSEMBLIES_TABLE]
     assert [(a[pa.ASM["partNumber"]], a[pa.ASM["packageAssembly"]], a[pa.ASM["extractedRowId"]]) for a in assemblies] == [
         ("P-100", False, "a"),
-        ("WZ_Fasteners_061026", True, "m"),
+        ("Fasteners", True, "m"),
     ]
     assert assemblies[0][pa.ASM["project"]] == "Proj A"
     assert assemblies[0][pa.ASM["quantity"]] == 2 and assemblies[1][pa.ASM["quantity"]] == 1
 
     children = glide.tables[pa.CHILD_PARTS_TABLE]
     assert [(c[pa.CP["drawingNumber"]], c[pa.CP["parentDrawingNumber"]], c[pa.CP["quantity"]], c[pa.CP["itemNumber"]])
-            for c in children] == [("B-1", "WZ_Fasteners_061026", "10", 1), ("N-1", "WZ_Fasteners_061026", "20", 2)]
+            for c in children] == [("B-1", "Fasteners", "10", 1), ("N-1", "Fasteners", "20", 2)]
 
     rows = {r["$rowID"]: r for r in glide.tables[pa.LINE_ITEMS_TABLE]}
     for row_id in ("a", "b", "c", "m"):
@@ -241,10 +241,10 @@ def test_submit_adds_drawings_linked_to_assemblies():
         (d[pa.DWG["partNumber"]], d[pa.DWG["partName"]], d[pa.DWG["quantity"]], d[pa.DWG["assemblyRowId"]], d[pa.DWG["drawing"]])
         for d in glide.tables[pa.DRAWINGS_TABLE]
     ]
-    group = assemblies["WZ_Fasteners_061026"]
+    group = assemblies["Fasteners"]
     assert drawings == [
         ("P-100", "Frame", 2, assemblies["P-100"], "https://files.test/Proj A/P-100.pdf"),
-        ("WZ_Fasteners_061026", "Fasteners", 1, group, "https://files.test/Proj A/WZ_Fasteners_061026.pdf"),
+        ("Fasteners", "Fasteners", 1, group, "https://files.test/Proj A/Fasteners.pdf"),
         ("B-1", "Bolt", 10, group, "https://files.test/Proj A/B-1.pdf"),
         ("N-1", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
     ]
@@ -392,3 +392,64 @@ def test_quantity_is_required_for_standalone_items():
     res = client_for(FakeGlide(items)).post(f"/po-assemblies/{PO}/submit")
     assert res.status_code == 400
     assert res.json()["rowErrors"] == [{"rowId": "x", "message": "Quantity is required"}]
+
+
+class FakeDownloader:
+    def __init__(self):
+        self.calls = []
+
+    async def download(self, file_id):
+        self.calls.append(file_id)
+        if file_id == "private":
+            raise ValueError("not public")
+        return b"%PDF-1.4 test", "application/pdf"
+
+
+def attachment_client(glide, downloader):
+    app = FastAPI()
+    app.include_router(pa.router)
+    app.dependency_overrides[pa.get_glide] = lambda: glide
+    app.dependency_overrides[pa.get_downloader] = lambda: downloader
+    return TestClient(app)
+
+
+def test_attachment_proxy_serves_only_the_pos_files():
+    pa._attachment_ids.clear()
+    glide = FakeGlide(sample_items())
+    glide.tables[pa.PO_TABLE][0][pa.PO_ATTACHMENT_IDS] = "1AbCdEfGhIjK, private_file_0"
+    downloader = FakeDownloader()
+    client = attachment_client(glide, downloader)
+    res = client.get(f"/po-assemblies/{PO}/attachments/0")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/pdf" and res.content.startswith(b"%PDF")
+    assert downloader.calls == ["1AbCdEfGhIjK"]
+    assert client.get(f"/po-assemblies/{PO}/attachments/5").status_code == 404
+    assert client.get("/po-assemblies/nope/attachments/0").status_code == 404
+
+
+def test_status_and_dates_are_saved_and_copied_to_assemblies():
+    items = [
+        line_item("x", partNumber="S-1", partName="Shaft", quantity=2, project="Proj A",
+                  currentStatus="Sampling", mfgStartDate="2026-10-10T00:00:00.000Z", dispatchDate="2026-11-01"),
+        line_item("y", partNumber="K-1", partName="Kit part", quantity=1, project="Proj A",
+                  partOfGroup=True, groupName="Kit", mfgStartDate="2026-10-12"),
+    ]
+    glide = FakeGlide(items)
+    client = client_for(glide)
+    body = client.get(f"/po-assemblies/{PO}").json()
+    assert body["rows"][0]["mfgStartDate"] == "2026-10-10" and body["statuses"] == ["Mfg", "Sampling"]
+    assert client.post(f"/po-assemblies/{PO}/save", json={"updates": [{"rowId": "x", "fields": {"currentStatus": "Bogus"}}]}).status_code == 400
+    assert client.post(f"/po-assemblies/{PO}/save", json={"updates": [{"rowId": "x", "fields": {"dispatchDate": "soon"}}]}).status_code == 400
+    assert client.post(f"/po-assemblies/{PO}/save", json={"updates": [{"rowId": "x", "fields": {"dispatchDate": "2026-11-02"}}]}).status_code == 200
+
+    assert client.post(f"/po-assemblies/{PO}/submit").status_code == 200
+    asm = {a[pa.ASM["partNumber"]]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    assert asm["S-1"][pa.ASM["currentStatus"]] == "Sampling"
+    assert asm["S-1"][pa.ASM["mfgStartDate"]] == "2026-10-10"
+    assert asm["S-1"][pa.ASM["dispatchDate"]] == "2026-11-02"
+    # A group takes the name shown on the page as its number and name, and its members' dates
+    assert asm["Kit"][pa.ASM["partName"]] == "Kit"
+    assert asm["Kit"][pa.ASM["mfgStartDate"]] == "2026-10-12"
+    assert glide.tables[pa.CHILD_PARTS_TABLE][0][pa.CP["parentDrawingNumber"]] == "Kit"
+    drawings = {d[pa.DWG["partNumber"]]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
+    assert drawings["S-1"][pa.DWG["currentStatus"]] == "Sampling"

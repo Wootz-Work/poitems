@@ -26,7 +26,7 @@ from email.message import EmailMessage
 
 import httpx
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,8 @@ LI = {
     "drawings": "yfDL9",
     "accepted": "kz6m3",
     "deferred": "nVpVa",
+    "mfgStartDate": "pTQeb",
+    "dispatchDate": "ERhTI",
 }
 
 # Purchase Order table
@@ -99,6 +101,8 @@ ASM = {
     "drawings": "4oKzo",
     "packageAssembly": "S8XG9",
     "extractedRowId": "u53LD",
+    "mfgStartDate": "6JmvW",
+    "dispatchDate": "QNggY",
 }
 
 # Child Parts table
@@ -117,10 +121,14 @@ CURRENT_STATUS = "Mfg"
 # Status set on an existing assembly (and its drawing) that is removed from a project
 CANCELLED_STATUS = "Cancelled"
 
+# Statuses the page offers for an item
+STATUSES = ("Mfg", "Sampling")
+
 STRING_FIELDS = {"partNumber", "partName", "groupName", "project"}
 BOOL_FIELDS = {"partOfGroup", "rejected", "groupMaster"}
+DATE_FIELDS = {"mfgStartDate", "dispatchDate"}
 # Fields the page may write. `rejected` is how the page removes a row.
-EDITABLE_FIELDS = STRING_FIELDS | BOOL_FIELDS | {"quantity"}
+EDITABLE_FIELDS = STRING_FIELDS | BOOL_FIELDS | DATE_FIELDS | {"quantity", "currentStatus"}
 
 
 class GlideClient:
@@ -332,6 +340,12 @@ def group_key(name):
     return _text(name).lower()
 
 
+def to_date(value):
+    """Glide date or ISO timestamp -> "YYYY-MM-DD" ("" when empty or unreadable)."""
+    match = re.match(r"\d{4}-\d{2}-\d{2}", _text(value))
+    return match.group(0) if match else ""
+
+
 def parse_line_item(row):
     def flag(key):
         return bool(row.get(LI[key]))
@@ -353,6 +367,8 @@ def parse_line_item(row):
         "rejected": flag("rejected"),
         "deferred": flag("deferred"),
         "addedAsAssembly": flag("addedAsAssembly"),
+        "mfgStartDate": to_date(row.get(LI["mfgStartDate"])),
+        "dispatchDate": to_date(row.get(LI["dispatchDate"])),
     }
 
 
@@ -380,6 +396,14 @@ def coerce_fields(fields):
             raise ValueError(f"field {key!r} cannot be edited")
         if key in STRING_FIELDS:
             out[key] = _text(value)
+        elif key == "currentStatus":
+            if value not in STATUSES:
+                raise ValueError(f"status must be one of {', '.join(STATUSES)}")
+            out[key] = value
+        elif key in DATE_FIELDS:
+            out[key] = to_date(value) or None
+            if _text(value) and not out[key]:
+                raise ValueError(f"{key} {value!r} is not a date")
         elif key in BOOL_FIELDS:
             out[key] = bool(value)
         else:  # quantity
@@ -633,6 +657,9 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
                 values[ASM["drawing"]] = source["drawing"]
             if source["drawings"]:
                 values[ASM["drawings"]] = source["drawings"]
+            for key in ("mfgStartDate", "dispatchDate"):
+                if source.get(key):
+                    values[ASM[key]] = source[key]
         else:
             values[ASM["currentStatus"]] = CURRENT_STATUS
         return {"kind": "add-row-to-table", "tableName": ASSEMBLIES_TABLE, "columnValues": values}
@@ -696,9 +723,15 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
             part_number, part_name = target["partNumber"], target["name"]
             mutations, first_item = [], target["childCount"] + 1
         else:
-            part_number = (master and master["partNumber"]) or name
-            part_name = (master and master["partName"]) or name
-            mutations, first_item = [assembly_row(project, part_number, part_name, True, master, 1)], 1
+            # The group's assembly number and name are both the name shown on the page
+            part_number = part_name = name
+            source = dict(master or {"rowId": None, "category": "", "drawing": None, "drawings": None})
+            source.update({
+                "currentStatus": members[0]["currentStatus"] or CURRENT_STATUS,
+                "mfgStartDate": next((m["mfgStartDate"] for m in members if m["mfgStartDate"]), ""),
+                "dispatchDate": next((m["dispatchDate"] for m in members if m["dispatchDate"]), ""),
+            })
+            mutations, first_item = [assembly_row(project, part_number, part_name, True, source, 1)], 1
         for index, item in enumerate(members, start=first_item):
             mutations.append({
                 "kind": "add-row-to-table",
@@ -726,7 +759,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=()):
             "childParts": len(members),
             "mutations": mutations,
             # The group's own drawing (new groups only), then one per child, all linked to the group's assembly row
-            "drawings": child_drawings if target else [drawing(project, part_number, part_name, 1, master)] + child_drawings,
+            "drawings": child_drawings if target else [drawing(project, part_number, part_name, 1, members[0])] + child_drawings,
             "fixedAssemblyRowId": target["rowId"] if target else None,
         })
 
@@ -863,7 +896,10 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
         for g in existing["groups"]
     ]
     rows = [
-        {key: i[key] for key in ("rowId", "partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "category")}
+        {key: i[key] for key in (
+            "rowId", "partNumber", "partName", "quantity", "partOfGroup", "groupName", "project", "category",
+            "currentStatus", "mfgStartDate", "dispatchDate",
+        )}
         for i in open_items if not i["groupMaster"]
     ]
     logger.info("po-assemblies %s: %d rows, %d groups in %.2fs", po_row_id, len(rows), len(groups), time.monotonic() - started)
@@ -876,6 +912,7 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
             "emailBody": _text(po.get(PO_BODY)),
         },
         "projects": parse_projects(po.get(PO_PROJECTS)),
+        "statuses": list(STATUSES),
         "groups": groups,
         "rows": rows,
         "existing": [
@@ -884,6 +921,78 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
         ],
         "submittedCount": sum(1 for i in items if i["addedAsAssembly"] and not i["groupMaster"]),
     }
+
+
+# --- Attachments ------------------------------------------------------------------
+
+DRIVE_FILE_ID = re.compile(r"^[A-Za-z0-9_-]{10,200}$")
+MAX_ATTACHMENT_BYTES = 30 * 1024 * 1024
+ATTACHMENT_IDS_TTL_S = 300
+
+
+class DriveDownloader:
+    """Downloads a Google Drive file shared as "anyone with the link"."""
+
+    def __init__(self):
+        self._client = None
+
+    async def download(self, file_id):
+        if self._client is None:
+            self._client = httpx.AsyncClient(timeout=60.0, follow_redirects=True)
+        url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        async with self._client.stream("GET", url) as res:
+            res.raise_for_status()
+            content_type = res.headers.get("content-type", "application/octet-stream").split(";")[0].strip()
+            if content_type == "text/html":
+                # Drive answers with a sign-in or warning page when the file is not public
+                raise ValueError("The file is not shared as \"anyone with the link\"")
+            data = bytearray()
+            async for chunk in res.aiter_bytes():
+                data.extend(chunk)
+                if len(data) > MAX_ATTACHMENT_BYTES:
+                    raise ValueError("The file is larger than 30 MB")
+        return bytes(data), content_type
+
+
+_downloader = None
+
+
+def get_downloader():
+    global _downloader
+    if _downloader is None:
+        _downloader = DriveDownloader()
+    return _downloader
+
+
+# PO row id -> (loaded at, attachment ids), so opening each tab doesn't re-read the PO table
+_attachment_ids = {}
+
+
+@router.get("/{po_row_id}/attachments/{index}")
+async def get_attachment(
+    po_row_id: str, index: int, glide: GlideClient = Depends(get_glide), downloader=Depends(get_downloader)
+):
+    """The PO's index-th attachment, served from here so the page can render (and zoom, copy from) it itself."""
+    cached = _attachment_ids.get(po_row_id)
+    if cached and time.monotonic() - cached[0] < ATTACHMENT_IDS_TTL_S:
+        ids = cached[1]
+    else:
+        try:
+            po = await _load_po(glide, po_row_id)
+        except httpx.HTTPError as e:
+            return _error(502, f"Could not load from Glide: {e}")
+        if po is None:
+            return _error(404, "Purchase order not found")
+        ids = parse_attachment_ids(po.get(PO_ATTACHMENT_IDS))
+        _attachment_ids[po_row_id] = (time.monotonic(), ids)
+    if not 0 <= index < len(ids) or not DRIVE_FILE_ID.match(ids[index]):
+        return _error(404, "Attachment not found")
+    try:
+        data, content_type = await downloader.download(ids[index])
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("attachment %s of %s failed: %s", index, po_row_id, e)
+        return _error(502, f"Could not download the attachment: {e}")
+    return Response(content=data, media_type=content_type, headers={"Cache-Control": "private, max-age=600"})
 
 
 @router.post("/{po_row_id}/save")

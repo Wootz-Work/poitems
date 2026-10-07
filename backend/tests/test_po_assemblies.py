@@ -32,8 +32,8 @@ class FakeGlide:
             pa.CHILD_PARTS_TABLE: [],
             pa.DRAWINGS_TABLE: [],
             pa.USERS_TABLE: [
-                {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin"},
-                {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User"},
+                {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin", pa.USER_NAME: "Boss"},
+                {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User", pa.USER_NAME: "Ayush Singh"},
             ],
         }
         self.calls = []
@@ -301,7 +301,8 @@ def test_email_is_off_by_default_and_goes_to_admins_cc_submitter_when_on():
     assert res.json()["emailSent"] is True
     to, cc, subject, body = on.sent[0]
     assert to == ["boss@x.com"] and cc == ["dev@x.com"]
-    assert "PO-77" in subject
+    assert subject == "Proj A is now in manufacturing"
+    assert body == "Hi team,\n\nProj A is now in manufacturing. Submitted by Ayush Singh\n\nHappy manufacturing!\n"
 
 
 def test_placeholder_pdf_handles_non_latin_text():
@@ -487,3 +488,10 @@ def test_drawing_file_number_reads_the_file_name():
     assert pa.drawing_file_number("https://res.cloudinary.com/x/raw/upload/v1/po-drawings/Proj%20A/B-1.pdf") == "B-1"
     assert pa.drawing_file_number("https://x.test/a/593G7HH-0100-0350.PDF?dl=1") == "593G7HH-0100-0350"
     assert pa.drawing_file_number(None) == ""
+
+
+def test_email_lists_every_project_and_falls_back_to_the_email():
+    units = [{"project": "Ekta 6"}, {"project": "Ekta 7"}, {"project": "Ekta 6"}]
+    subject, body = pa.submitted_email({}, pa.user_name([], "x@y.com"), units)
+    assert subject == "Ekta 6, Ekta 7 are now in manufacturing"
+    assert "Ekta 6, Ekta 7 are now in manufacturing. Submitted by x@y.com" in body

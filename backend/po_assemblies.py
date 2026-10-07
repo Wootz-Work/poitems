@@ -91,6 +91,7 @@ DRAWING_TYPE_PART = "Part"
 # Users table
 USER_EMAIL = "Email"
 USER_ROLE = "Role"
+USER_NAME = "Name"
 
 # Assemblies table
 ASM = {
@@ -320,17 +321,27 @@ def admin_emails(users, role):
     return emails
 
 
-def submitted_email(po, submitted_by, units):
-    """Static body for now; the wording will be replaced later."""
-    po_number = _text(po.get(PO_NUMBER)) or "(no PO number)"
-    projects = sorted({unit["project"] for unit in units})
-    subject = f"Assemblies added for PO {po_number}"
+def user_name(users, email):
+    """The Users table name for an email, else the email itself."""
+    for user in users:
+        if _text(user.get(USER_EMAIL)).lower() == _text(email).lower() and _text(user.get(USER_NAME)):
+            return _text(user.get(USER_NAME))
+    return _text(email) or "a team member"
+
+
+def submitted_email(po, submitted_by_name, units):
+    """The "now in manufacturing" email: projects of what was published, and who published it."""
+    projects = []
+    for unit in units:
+        if unit["project"] not in projects:
+            projects.append(unit["project"])
+    names = ", ".join(projects)
+    verb = "is" if len(projects) == 1 else "are"
+    subject = f"{names} {verb} now in manufacturing"
     body = (
-        "Hi,\n\n"
-        f"The line items of PO {po_number} ({_text(po.get(PO_CUSTOMER))}) have been added as assemblies "
-        f"to {', '.join(projects)} by {submitted_by or 'a user'}.\n\n"
-        "Placeholder drawings were created for every assembly and child part. "
-        "Please replace them with the original drawings.\n"
+        "Hi team,\n\n"
+        f"{names} {verb} now in manufacturing. Submitted by {submitted_by_name}\n\n"
+        "Happy manufacturing!\n"
     )
     return subject, body
 
@@ -1212,7 +1223,7 @@ async def submit_po_assemblies(
                 to = admin_emails(users, mailer.admin_role)
                 cc = [submitted_by] if submitted_by and submitted_by not in to else []
                 if to or cc:
-                    subject, text = submitted_email(po, submitted_by, done)
+                    subject, text = submitted_email(po, user_name(users, submitted_by), done)
                     await mailer.send(to or cc, cc if to else [], subject, text)
                     email_sent = True
             except Exception as e:

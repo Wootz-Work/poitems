@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -495,3 +496,42 @@ def test_email_lists_every_project_and_falls_back_to_the_email():
     subject, body = pa.submitted_email({}, pa.user_name([], "x@y.com"), units)
     assert subject == "Ekta 6, Ekta 7 are now in manufacturing"
     assert "Ekta 6, Ekta 7 are now in manufacturing. Submitted by x@y.com" in body
+
+
+def test_graph_mailer_gets_a_token_and_sends(monkeypatch):
+    import asyncio
+    import httpx
+
+    for key, value in {"MS_TENANT_ID": "t1", "MS_CLIENT_ID": "c1", "MS_CLIENT_SECRET": "s1", "MS_SENDER": "ops@wootz.work"}.items():
+        monkeypatch.setenv(key, value)
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        if "login.microsoftonline.com" in str(request.url):
+            return httpx.Response(200, json={"access_token": "tok", "expires_in": 3600})
+        return httpx.Response(202)
+
+    mailer = pa.Mailer(http=httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    asyncio.run(mailer.send(["boss@x.com"], ["dev@x.com"], "Ekta 6 is now in manufacturing", "Hi team"))
+    asyncio.run(mailer.send(["boss@x.com"], [], "again", "Hi"))
+
+    token_calls = [r for r in seen if "login.microsoftonline.com" in str(r.url)]
+    sends = [r for r in seen if "graph.microsoft.com" in str(r.url)]
+    assert len(token_calls) == 1  # the token is reused
+    assert str(token_calls[0].url) == "https://login.microsoftonline.com/t1/oauth2/v2.0/token"
+    assert str(sends[0].url) == "https://graph.microsoft.com/v1.0/users/ops@wootz.work/sendMail"
+    assert sends[0].headers["authorization"] == "Bearer tok"
+    sent = json.loads(sends[0].content)["message"]
+    assert sent["toRecipients"] == [{"emailAddress": {"address": "boss@x.com"}}]
+    assert sent["ccRecipients"] == [{"emailAddress": {"address": "dev@x.com"}}]
+    assert sent["subject"] == "Ekta 6 is now in manufacturing"
+
+
+def test_graph_mailer_needs_its_settings(monkeypatch):
+    import asyncio
+
+    for key in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_SENDER"):
+        monkeypatch.delenv(key, raising=False)
+    with pytest.raises(RuntimeError, match="MS_SENDER"):
+        asyncio.run(pa.Mailer().send(["a@b.com"], [], "s", "b"))

@@ -19,10 +19,8 @@ import io
 import logging
 import os
 import re
-import smtplib
 import time
 from datetime import datetime, timezone
-from email.message import EmailMessage
 
 import httpx
 from fastapi import APIRouter, Depends, Request
@@ -264,42 +262,77 @@ def get_uploader():
 
 # --- Email ---------------------------------------------------------------------------
 
-def _env_flag(name):
-    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+def _env_flag(name, default=False):
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
 
 
 class Mailer:
     """
-    Sends the "assemblies added" email over SMTP. Off unless PO_EMAIL_ENABLED is true.
-    Env: SMTP_HOST, SMTP_PORT (587 = STARTTLS, 465 = SSL), SMTP_USER, SMTP_PASSWORD, EMAIL_FROM,
+    Sends the "now in manufacturing" email through Microsoft Graph, as the mailbox MS_SENDER.
+    On by default; PO_EMAIL_ENABLED=false turns it off.
+    Env: MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET (an Azure app registration with the Mail.Send
+    application permission, admin-consented), MS_SENDER (the mailbox to send from),
     PO_EMAIL_ADMIN_ROLE (the Users table role that receives it, default "Admin").
     """
 
-    def __init__(self):
-        self.enabled = _env_flag("PO_EMAIL_ENABLED")
-        self.admin_role = os.getenv("PO_EMAIL_ADMIN_ROLE", "Admin")
+    GRAPH = "https://graph.microsoft.com/v1.0"
 
-    def _send(self, message):
-        host = os.getenv("SMTP_HOST")
-        port = int(os.getenv("SMTP_PORT", "587"))
-        user, password = os.getenv("SMTP_USER"), os.getenv("SMTP_PASSWORD")
-        smtp_class = smtplib.SMTP_SSL if port == 465 else smtplib.SMTP
-        with smtp_class(host, port, timeout=30) as smtp:
-            if port != 465:
-                smtp.starttls()
-            if user:
-                smtp.login(user, password)
-            smtp.send_message(message)
+    def __init__(self, http=None):
+        self.enabled = _env_flag("PO_EMAIL_ENABLED", default=True)
+        self.admin_role = os.getenv("PO_EMAIL_ADMIN_ROLE", "Admin")
+        self.tenant = os.getenv("MS_TENANT_ID", "")
+        self.client_id = os.getenv("MS_CLIENT_ID", "")
+        self.client_secret = os.getenv("MS_CLIENT_SECRET", "")
+        self.sender = os.getenv("MS_SENDER", "")
+        self._http = http
+        self._token, self._token_expires = None, 0.0
+
+    def _client(self):
+        if self._http is None:
+            self._http = httpx.AsyncClient(timeout=30.0)
+        return self._http
+
+    async def _access_token(self):
+        # App-only token (client credentials); reused until a minute before it expires
+        if self._token and time.monotonic() < self._token_expires - 60:
+            return self._token
+        res = await self._client().post(
+            f"https://login.microsoftonline.com/{self.tenant}/oauth2/v2.0/token",
+            data={
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "scope": "https://graph.microsoft.com/.default",
+            },
+        )
+        if res.status_code != 200:
+            raise RuntimeError(f"Microsoft sign-in failed ({res.status_code}): {res.text[:300]}")
+        payload = res.json()
+        self._token = payload["access_token"]
+        self._token_expires = time.monotonic() + int(payload.get("expires_in", 3600))
+        return self._token
 
     async def send(self, to, cc, subject, body):
-        message = EmailMessage()
-        message["From"] = os.getenv("EMAIL_FROM") or os.getenv("SMTP_USER")
-        message["To"] = ", ".join(to)
+        if not (self.tenant and self.client_id and self.client_secret and self.sender):
+            raise RuntimeError("Email is on but MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET or MS_SENDER is not set")
+        recipients = lambda emails: [{"emailAddress": {"address": e}} for e in emails]
+        message = {
+            "subject": subject,
+            "body": {"contentType": "Text", "content": body},
+            "toRecipients": recipients(to),
+        }
         if cc:
-            message["Cc"] = ", ".join(cc)
-        message["Subject"] = subject
-        message.set_content(body)
-        await asyncio.to_thread(self._send, message)
+            message["ccRecipients"] = recipients(cc)
+        res = await self._client().post(
+            f"{self.GRAPH}/users/{self.sender}/sendMail",
+            headers={"Authorization": f"Bearer {await self._access_token()}"},
+            json={"message": message, "saveToSentItems": True},
+        )
+        if res.status_code != 202:
+            raise RuntimeError(f"Microsoft Graph refused the email ({res.status_code}): {res.text[:300]}")
 
 
 _mailer = None

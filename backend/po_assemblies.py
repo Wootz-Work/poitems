@@ -461,6 +461,26 @@ def part_key(project, part_number):
     return (_text(project).lower(), _text(part_number).lower())
 
 
+def drawing_file_number(url):
+    """The drawing number a drawing's file is named after: ".../B-1.pdf" -> "B-1"."""
+    from urllib.parse import unquote, urlparse
+
+    name = unquote(urlparse(_text(url)).path.rsplit("/", 1)[-1])
+    return re.sub(r"\.pdf$", "", name, flags=re.IGNORECASE)
+
+
+def drawing_identity(project, assembly_part_number, part_number):
+    """A drawing is the project + the assembly's part number (its Part number column) + its own number."""
+    return (_text(project).lower(), _text(assembly_part_number).lower(), _text(part_number).lower())
+
+
+def row_drawing_identity(row):
+    assembly = row.get(DWG["partNumber"])
+    # A drawing without a file is taken to be the assembly's own drawing
+    own = drawing_file_number(row.get(DWG["drawing"])) or assembly
+    return drawing_identity(row.get(DWG["project"]), assembly, own)
+
+
 def load_existing(projects, assemblies, children, drawings):
     """
     What is already in the PO's projects: standalone assemblies, and the children of package
@@ -471,7 +491,7 @@ def load_existing(projects, assemblies, children, drawings):
     wanted = {p.lower() for p in projects}
     drawing_by_key = {}
     for row in drawings:
-        drawing_by_key.setdefault(part_key(row.get(DWG["project"]), row.get(DWG["partNumber"])), row)
+        drawing_by_key.setdefault(row_drawing_identity(row), row)
 
     items, groups = [], {}
     for row in assemblies:
@@ -486,7 +506,7 @@ def load_existing(projects, assemblies, children, drawings):
                 "rowId": row.get("$rowID"), "childCount": 0,
             }
             continue
-        drawing = drawing_by_key.get(part_key(project, part_number)) or {}
+        drawing = drawing_by_key.get(drawing_identity(project, part_number, part_number)) or {}
         items.append({
             "key": f"a:{row.get('$rowID')}", "kind": "assembly", "rowId": row.get("$rowID"),
             "project": project, "partNumber": part_number, "partName": part_name,
@@ -503,7 +523,8 @@ def load_existing(projects, assemblies, children, drawings):
             continue  # not a child of a group assembly in these projects
         group["childCount"] += 1
         part_number = _text(row.get(CP["drawingNumber"])) or _text(row.get(CP["partNumber"]))
-        drawing = drawing_by_key.get(part_key(project, part_number)) or {}
+        drawing = (drawing_by_key.get(drawing_identity(project, group["partNumber"], part_number))
+                   or drawing_by_key.get(drawing_identity(project, part_number, part_number)) or {})
         items.append({
             "key": f"c:{row.get('$rowID')}", "kind": "child", "rowId": row.get("$rowID"),
             "project": project, "partNumber": part_number, "partName": _text(row.get(CP["description"])),
@@ -679,10 +700,11 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             values[ASM["currentStatus"]] = CURRENT_STATUS
         return {"kind": "add-row-to-table", "tableName": ASSEMBLIES_TABLE, "columnValues": values}
 
-    def drawing(project, part_number, part_name, quantity, source, kind=DRAWING_TYPE_ASSEMBLY):
+    def drawing(project, part_number, part_name, quantity, source, kind=DRAWING_TYPE_ASSEMBLY, assembly_part_number=None):
         return {
             "project": project,
-            "partNumber": part_number,
+            "partNumber": part_number,  # names the file
+            "assemblyPartNumber": assembly_part_number or part_number,  # goes in the Part number column
             "partName": part_name,
             "quantity": quantity,
             "currentStatus": (source and source["currentStatus"]) or CURRENT_STATUS,
@@ -767,7 +789,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             row_ids.append(master["rowId"])
         mutations.extend(mark_submitted(row_id, project) for row_id in row_ids)
         child_drawings = [
-            drawing(project, item["partNumber"], item["partName"], item["quantity"], item, DRAWING_TYPE_PART) for item in members
+            drawing(project, item["partNumber"], item["partName"], item["quantity"], item, DRAWING_TYPE_PART, part_number)
+            for item in members
         ]
         units.append({
             "kind": "existing-group" if target else "group",
@@ -784,25 +807,21 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     return units, []
 
 
-def drawing_key(project, part_number):
-    return (_text(project).lower(), _text(part_number).lower())
-
-
 def plan_drawings(units, existing_rows):
     """
-    Decides, for each unit's drawings, whether to add a row or update the existing one for the
-    same project and part number. Sets unit["drawingJobs"] and returns the jobs that need a PDF.
-    A part number that appears twice in one submit (same project) gets one drawing.
+    Decides, for each unit's drawings, whether to add a row or update the existing one (same
+    project, assembly part number and drawing number). Sets unit["drawingJobs"] and returns the
+    jobs that need a PDF. The same drawing twice in one submit is made once.
     """
     existing = {}
     for row in existing_rows:
-        existing.setdefault(drawing_key(row.get(DWG["project"]), row.get(DWG["partNumber"])), row.get("$rowID"))
+        existing.setdefault(row_drawing_identity(row), row.get("$rowID"))
     seen = set()
     new_jobs = []
     for unit in units:
         unit["drawingJobs"] = []
         for spec in unit["drawings"]:
-            key = drawing_key(spec["project"], spec["partNumber"])
+            key = drawing_identity(spec["project"], spec["assemblyPartNumber"], spec["partNumber"])
             if key in seen:
                 continue
             seen.add(key)
@@ -821,7 +840,7 @@ def drawing_mutation(job, assembly_row_id):
     if job["existingRowId"]:
         return {"kind": "set-columns-in-row", "tableName": DRAWINGS_TABLE, "rowID": job["existingRowId"], "columnValues": values}
     values.update({
-        DWG["partNumber"]: spec["partNumber"],
+        DWG["partNumber"]: spec["assemblyPartNumber"],
         DWG["project"]: spec["project"],
         DWG["partName"]: spec["partName"],
         DWG["drawing"]: job["url"],

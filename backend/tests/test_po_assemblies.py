@@ -32,8 +32,8 @@ class FakeGlide:
             pa.CHILD_PARTS_TABLE: [],
             pa.DRAWINGS_TABLE: [],
             pa.USERS_TABLE: [
-                {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin"},
-                {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User"},
+                {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin", pa.USER_NAME: "Boss"},
+                {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User", pa.USER_NAME: "Ayush Singh"},
             ],
         }
         self.calls = []
@@ -248,8 +248,9 @@ def test_submit_adds_drawings_linked_to_assemblies():
     assert drawings == [
         ("P-100", "Frame", 2, assemblies["P-100"], "https://files.test/Proj A/P-100.pdf"),
         ("Fasteners", "Fasteners", 1, group, "https://files.test/Proj A/Fasteners.pdf"),
-        ("B-1", "Bolt", 10, group, "https://files.test/Proj A/B-1.pdf"),
-        ("N-1", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
+        # Children carry the group's part number; their files are named after their own
+        ("Fasteners", "Bolt", 10, group, "https://files.test/Proj A/B-1.pdf"),
+        ("Fasteners", "Nut", 20, group, "https://files.test/Proj A/N-1.pdf"),
     ]
     assert all(d[pa.DWG["project"]] == "Proj A" and d[pa.DWG["currentStatus"]] == "Mfg" for d in glide.tables[pa.DRAWINGS_TABLE])
     assert [d[pa.DWG["type"]] for d in glide.tables[pa.DRAWINGS_TABLE]] == ["Assembly", "Assembly", "Part", "Part"]
@@ -259,7 +260,7 @@ def test_submit_adds_drawings_linked_to_assemblies():
 def test_existing_drawing_is_updated_not_duplicated():
     glide = FakeGlide(submittable_items())
     glide.tables[pa.DRAWINGS_TABLE].append(
-        {"$rowID": "dw1", pa.DWG["project"]: "proj a", pa.DWG["partNumber"]: "b-1", pa.DWG["drawing"]: "https://real.pdf"}
+        {"$rowID": "dw1", pa.DWG["project"]: "proj a", pa.DWG["partNumber"]: "fasteners", pa.DWG["drawing"]: "https://real.test/B-1.pdf"}
     )
     uploader = FakeUploader()
     res = client_for(glide, uploader).post(f"/po-assemblies/{PO}/submit")
@@ -268,7 +269,7 @@ def test_existing_drawing_is_updated_not_duplicated():
     existing = glide.tables[pa.DRAWINGS_TABLE][0]
     assert existing[pa.DWG["quantity"]] == 10
     assert existing[pa.DWG["currentStatus"]] == "Mfg"
-    assert existing[pa.DWG["drawing"]] == "https://real.pdf"
+    assert existing[pa.DWG["drawing"]] == "https://real.test/B-1.pdf"
     assert pa.DWG["type"] not in existing  # an existing drawing keeps its type
     assert ("Proj A", "B-1") not in uploader.uploads
 
@@ -300,7 +301,8 @@ def test_email_is_off_by_default_and_goes_to_admins_cc_submitter_when_on():
     assert res.json()["emailSent"] is True
     to, cc, subject, body = on.sent[0]
     assert to == ["boss@x.com"] and cc == ["dev@x.com"]
-    assert "PO-77" in subject
+    assert subject == "Proj A is now in manufacturing"
+    assert body == "Hi team,\n\nProj A is now in manufacturing. Submitted by Ayush Singh\n\nHappy manufacturing!\n"
 
 
 def test_placeholder_pdf_handles_non_latin_text():
@@ -364,7 +366,8 @@ def test_group_matching_an_existing_group_adds_children_to_it():
     assert child[pa.CP["parentDrawingNumber"]] == "KIT-1"
     assert child[pa.CP["itemNumber"]] == 2  # after the existing child
     drawing = glide.tables[pa.DRAWINGS_TABLE][-1]
-    assert drawing[pa.DWG["partNumber"]] == "K-2" and drawing[pa.DWG["assemblyRowId"]] == "asm-kit"
+    assert drawing[pa.DWG["partNumber"]] == "KIT-1" and drawing[pa.DWG["assemblyRowId"]] == "asm-kit"
+    assert drawing[pa.DWG["drawing"]].endswith("/K-2.pdf")
 
 
 def test_existing_changes_update_quantity_name_and_remove():
@@ -479,3 +482,16 @@ def test_dates_are_required_for_new_assemblies_only():
         {"rowId": "x", "message": "Mfg start date is required"},
         {"rowId": "x", "message": "Dispatch date is required"},
     ]
+
+
+def test_drawing_file_number_reads_the_file_name():
+    assert pa.drawing_file_number("https://res.cloudinary.com/x/raw/upload/v1/po-drawings/Proj%20A/B-1.pdf") == "B-1"
+    assert pa.drawing_file_number("https://x.test/a/593G7HH-0100-0350.PDF?dl=1") == "593G7HH-0100-0350"
+    assert pa.drawing_file_number(None) == ""
+
+
+def test_email_lists_every_project_and_falls_back_to_the_email():
+    units = [{"project": "Ekta 6"}, {"project": "Ekta 7"}, {"project": "Ekta 6"}]
+    subject, body = pa.submitted_email({}, pa.user_name([], "x@y.com"), units)
+    assert subject == "Ekta 6, Ekta 7 are now in manufacturing"
+    assert "Ekta 6, Ekta 7 are now in manufacturing. Submitted by x@y.com" in body

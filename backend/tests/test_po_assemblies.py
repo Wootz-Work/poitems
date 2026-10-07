@@ -292,7 +292,7 @@ def test_upload_failure_writes_nothing():
     assert glide.calls == []
 
 
-def test_email_is_off_by_default_and_goes_to_admins_cc_submitter_when_on():
+def test_email_only_when_enabled_and_goes_to_admins_cc_submitter():
     off = FakeMailer(enabled=False)
     client_for(FakeGlide(submittable_items()), mailer=off).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
     assert off.sent == []
@@ -535,3 +535,10 @@ def test_graph_mailer_needs_its_settings(monkeypatch):
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(RuntimeError, match="MS_SENDER"):
         asyncio.run(pa.Mailer().send(["a@b.com"], [], "s", "b"))
+
+
+def test_email_is_on_unless_turned_off(monkeypatch):
+    monkeypatch.delenv("PO_EMAIL_ENABLED", raising=False)
+    assert pa.Mailer().enabled is True
+    monkeypatch.setenv("PO_EMAIL_ENABLED", "false")
+    assert pa.Mailer().enabled is False

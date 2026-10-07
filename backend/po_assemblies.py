@@ -262,14 +262,17 @@ def get_uploader():
 
 # --- Email ---------------------------------------------------------------------------
 
-def _env_flag(name):
-    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+def _env_flag(name, default=False):
+    value = os.getenv(name, "").strip().lower()
+    if not value:
+        return default
+    return value in ("1", "true", "yes", "on")
 
 
 class Mailer:
     """
     Sends the "now in manufacturing" email through Microsoft Graph, as the mailbox MS_SENDER.
-    Off unless PO_EMAIL_ENABLED is true.
+    On by default; PO_EMAIL_ENABLED=false turns it off.
     Env: MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET (an Azure app registration with the Mail.Send
     application permission, admin-consented), MS_SENDER (the mailbox to send from),
     PO_EMAIL_ADMIN_ROLE (the Users table role that receives it, default "Admin").
@@ -278,7 +281,7 @@ class Mailer:
     GRAPH = "https://graph.microsoft.com/v1.0"
 
     def __init__(self, http=None):
-        self.enabled = _env_flag("PO_EMAIL_ENABLED")
+        self.enabled = _env_flag("PO_EMAIL_ENABLED", default=True)
         self.admin_role = os.getenv("PO_EMAIL_ADMIN_ROLE", "Admin")
         self.tenant = os.getenv("MS_TENANT_ID", "")
         self.client_id = os.getenv("MS_CLIENT_ID", "")

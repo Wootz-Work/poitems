@@ -374,6 +374,7 @@
         // Last values set with "Set for all", used for rows added afterwards
         const defaultDates = { mfgStartDate: tomorrow(), dispatchDate: "" };
         let existing = [];         // assemblies already in the PO's projects
+        let existingGroups = [];   // their group assemblies (a child's status and dates are its group's)
         let existingEdits = {};    // key -> { quantity?, partName?, remove? }, kept in the browser until publish
         const records = new Map(); // localId -> record (rows, removed rows and new group masters still to save)
         const selected = new Set();
@@ -494,11 +495,17 @@
             try { localStorage.setItem(EDITS_KEY, JSON.stringify(existingEdits)); } catch { /* storage unavailable */ }
         }
 
+        // What an edit key refers to: an existing assembly/child, or a group (for status and dates)
+        const existingTarget = (key) => existing.find((e) => e.key === key) || existingGroups.find((g) => g.key === key);
+
         function editExisting(key, change) {
-            const item = existing.find((e) => e.key === key);
+            const item = existingTarget(key);
             const next = { ...(existingEdits[key] || {}), ...change };
             if (next.quantity != null && item && Number(next.quantity) === item.quantity) delete next.quantity;
             if (next.partName != null && item && next.partName.trim() === item.partName) delete next.partName;
+            for (const field of ["currentStatus", "mfgStartDate", "dispatchDate"]) {
+                if (next[field] != null && item && next[field] === (item[field] || "")) delete next[field];
+            }
             if (!next.remove) delete next.remove;
             if (Object.keys(next).length) existingEdits[key] = next; else delete existingEdits[key];
             storeEdits();
@@ -638,10 +645,11 @@
 
         function summary() {
             const add = newRows().filter((r) => !isBlank(r));
-            const updates = matchedRows().filter((r) => r.quantity !== matchOf(r).quantity).length +
-                Object.values(existingEdits).filter((e) => !e.remove && e.quantity != null).length;
+            const matchedKeys = new Set(matchedRows().filter((r) => r.quantity !== matchOf(r).quantity).map((r) => matchOf(r).key));
+            const editedKeys = Object.entries(existingEdits).filter(([, e]) => !e.remove).map(([k]) => k);
+            const updates = new Set([...matchedKeys, ...editedKeys]).size;
             const removals = Object.values(existingEdits).filter((e) => e.remove).length;
-            const renames = Object.values(existingEdits).filter((e) => !e.remove && e.partName != null && e.quantity == null).length;
+            const renames = 0;
             const matched = matchedRows().length;
             const missing = rows.reduce((n, r) => n + Object.keys(rowProblems(r)).length, 0) +
                 existing.reduce((n, e) => n + Object.keys(existingProblems(e)).length, 0);
@@ -659,8 +667,7 @@
             if (footer) {
                 const parts = [];
                 if (s.add) parts.push(`${s.add} new`);
-                if (s.updates) parts.push(`${s.updates} quantity update${s.updates === 1 ? "" : "s"}`);
-                if (s.renames) parts.push(`${s.renames} rename${s.renames === 1 ? "" : "s"}`);
+                if (s.updates) parts.push(`${s.updates} update${s.updates === 1 ? "" : "s"}`);
                 if (s.removals) parts.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
                 footer.textContent = parts.length ? `On publish: ${parts.join(" · ")}` : "Nothing to publish yet";
             }
@@ -821,8 +828,28 @@
             }));
         }
 
-        // Status and dates belong to new assemblies; existing rows leave those columns empty
-        const emptyCells = () => [h("span", { class: "cell" }), h("span", { class: "cell" }), h("span", { class: "cell" })];
+        // Status and dates of an existing assembly; a child shows and edits its group's
+        function existingDetailCells(item, disabled) {
+            const key = item.groupKey || item.key;
+            const base = existingTarget(key) || item;
+            const edit = existingEdits[key] || {};
+            const value = (field) => (edit[field] != null ? edit[field] : base[field] || "");
+            const hint = item.groupKey ? `Applies to the whole group "${item.parent}"` : null;
+            const status = value("currentStatus");
+            const dateInput = (field, label) => h("span", { class: "cell", title: hint }, h("input", {
+                type: "date", class: "in date", value: value(field), disabled, "aria-label": label,
+                "data-focus": `ex-${key}:${field}:${item.key}`,
+                onchange: (e) => { editExisting(key, { [field]: e.target.value }); render(); },
+            }));
+            return [
+                h("span", { class: "cell pad", title: hint }, h("button", {
+                    class: `select${status ? "" : " placeholder"}`, disabled, "aria-haspopup": "menu", "aria-expanded": "false",
+                    onclick: (e) => openChoiceMenu(e.currentTarget, status, (st) => editExisting(key, { currentStatus: st })),
+                }, h("span", { class: "label" }, status || "—"), icon("chevron", 14, "chev"))),
+                dateInput("mfgStartDate", "Mfg start date"),
+                dateInput("dispatchDate", "Dispatch date"),
+            ];
+        }
 
         function renderExistingSections() {
             const byProject = new Map(projects.map((p) => [lower(p), { name: p, items: [] }]));
@@ -873,7 +900,7 @@
                     }),
                     edit.quantity != null && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
                 h("span", { class: "cell text muted" }, item.project),
-                ...emptyCells(),
+                ...existingDetailCells(item, removed),
                 h("span", { class: "cell center" }, removed
                     ? h("button", { class: "undo", onclick: () => { editExisting(item.key, { remove: false }); render(); } }, "Undo")
                     : h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15))),
@@ -901,7 +928,7 @@
                     }),
                     rec.quantity !== item.quantity && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
                 h("span", { class: "cell text muted" }, item.project),
-                ...emptyCells(),
+                ...existingDetailCells(item, false),
                 h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove this PO line", title: "Remove this PO line", onclick: () => removeRows([rec]) }, icon("trash", 15))),
             );
         }
@@ -962,13 +989,25 @@
             menu.hidden = false;
             menuAnchor = anchor;
             anchor.setAttribute("aria-expanded", "true");
-            const r = anchor.getBoundingClientRect();
+            placeMenu();
+            (menu.querySelector("[aria-checked='true']") || menu.querySelector(".opt"))?.focus({ preventScroll: true });
+        }
+
+        // Keeps the menu under (or above) its button; closes it once the button is scrolled out of view
+        function placeMenu() {
+            const menu = $("menu");
+            if (menu.hidden || !menuAnchor) return;
+            const r = menuAnchor.getBoundingClientRect();
+            const pane = $("table-scroll").getBoundingClientRect();
+            if (menuAnchor.closest("#table-scroll") && (r.right < pane.left || r.left > pane.right || r.bottom < pane.top || r.top > pane.bottom)) {
+                closeMenu();
+                return;
+            }
             menu.style.minWidth = `${Math.max(220, r.width)}px`;
             const below = window.innerHeight - r.bottom;
             const height = Math.min(menu.scrollHeight, 360);
-            menu.style.left = `${Math.min(r.left, window.innerWidth - menu.offsetWidth - 8)}px`;
+            menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - menu.offsetWidth - 8))}px`;
             menu.style.top = below < height + 12 && r.top > height + 12 ? `${r.top - height - 4}px` : `${r.bottom + 4}px`;
-            (menu.querySelector("[aria-checked='true']") || menu.querySelector(".opt"))?.focus();
         }
 
         function closeMenu() {
@@ -983,7 +1022,7 @@
             if (e.key === "Escape" && !$("menu").hidden) { const a = menuAnchor; closeMenu(); a?.focus(); }
         });
         window.addEventListener("resize", closeMenu);
-        $("table-scroll").addEventListener("scroll", closeMenu);
+        $("table-scroll").addEventListener("scroll", placeMenu);
         $("menu").addEventListener("keydown", (e) => {
             if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
             const opts = [...$("menu").querySelectorAll(".opt")];
@@ -1038,8 +1077,12 @@
 
         function openStatusMenu(anchor, targets) {
             const current = targets.length === 1 ? (targets[0].currentStatus || statuses[0]) : null;
+            openChoiceMenu(anchor, current, (st) => targets.forEach((rec) => { rec.currentStatus = st; markDirty(rec, ["currentStatus"]); }));
+        }
+
+        function openChoiceMenu(anchor, current, onPick) {
             openMenu(anchor, () => statuses.map((st) => option(st, current === st, () => {
-                targets.forEach((rec) => { rec.currentStatus = st; markDirty(rec, ["currentStatus"]); });
+                onPick(st);
                 closeMenu();
                 render();
             })));
@@ -1078,8 +1121,7 @@
             const s = summary();
             const lines = [];
             if (s.add) lines.push(`${s.add} new assembl${s.add === 1 ? "y" : "ies"}`);
-            if (s.updates) lines.push(`${s.updates} quantity update${s.updates === 1 ? "" : "s"}`);
-            if (s.renames) lines.push(`${s.renames} rename${s.renames === 1 ? "" : "s"}`);
+            if (s.updates) lines.push(`${s.updates} update${s.updates === 1 ? "" : "s"} to existing assemblies`);
             if (s.removals) lines.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
             $("confirm-list").replaceChildren(...lines.map((t) => h("li", {}, t)));
             $("confirm").classList.add("show");
@@ -1113,6 +1155,7 @@
                 if (created) parts.push(`${created} assembl${created === 1 ? "y" : "ies"} created`);
                 if (body.childParts) parts.push(`${body.childParts} child part${body.childParts === 1 ? "" : "s"} added`);
                 if (body.quantityUpdates) parts.push(`${body.quantityUpdates} quantity update${body.quantityUpdates === 1 ? "" : "s"}`);
+                if (body.detailUpdates) parts.push(`${body.detailUpdates} status/date update${body.detailUpdates === 1 ? "" : "s"}`);
                 if (body.removals) parts.push(`${body.removals} removed`);
                 await load();
                 const warnings = body.warnings || [];
@@ -1431,9 +1474,10 @@
             statuses = body.statuses || statuses;
             groups = body.groups.map((g) => ({ name: g.name, partNumber: g.partNumber, existing: g.existing, project: g.project }));
             existing = body.existing || [];
+            existingGroups = body.existingGroups || [];
             loadEdits();
             // Drop edits for assemblies that are gone
-            for (const key of Object.keys(existingEdits)) if (!existing.some((e) => e.key === key)) delete existingEdits[key];
+            for (const key of Object.keys(existingEdits)) if (!existingTarget(key)) delete existingEdits[key];
             storeEdits();
 
             records.clear();

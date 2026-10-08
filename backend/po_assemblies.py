@@ -544,10 +544,18 @@ def load_existing(projects, assemblies, children, drawings):
             continue
         part_number = _text(row.get(ASM["partNumber"]))
         part_name = _text(row.get(ASM["partName"]))
+        details = {
+            "currentStatus": _text(row.get(ASM["currentStatus"])),
+            "mfgStartDate": to_date(row.get(ASM["mfgStartDate"])),
+            "dispatchDate": to_date(row.get(ASM["dispatchDate"])),
+        }
         if row.get(ASM["packageAssembly"]):
+            own_drawing = drawing_by_key.get(drawing_identity(project, part_number, part_number)) or {}
             groups[part_key(project, part_number)] = {
-                "name": part_name or part_number, "partNumber": part_number, "project": project,
-                "rowId": row.get("$rowID"), "childCount": 0,
+                "key": f"g:{row.get('$rowID')}", "kind": "group",
+                "name": part_name or part_number, "partNumber": part_number, "partName": part_name, "project": project,
+                "rowId": row.get("$rowID"), "childCount": 0, "quantity": None,
+                "drawingRowId": own_drawing.get("$rowID"), **details,
             }
             continue
         drawing = drawing_by_key.get(drawing_identity(project, part_number, part_number)) or {}
@@ -558,6 +566,7 @@ def load_existing(projects, assemblies, children, drawings):
             else to_number(drawing.get(DWG["quantity"])),
             "parent": "",
             "drawingRowId": drawing.get("$rowID"),
+            "groupKey": None, **details,
         })
 
     for row in children:
@@ -574,12 +583,21 @@ def load_existing(projects, assemblies, children, drawings):
             "project": project, "partNumber": part_number, "partName": _text(row.get(CP["description"])),
             "quantity": to_number(row.get(CP["quantity"])), "parent": group["name"],
             "drawingRowId": drawing.get("$rowID"),
+            # A child has no status or dates of its own: it shows (and edits) its group's
+            "groupKey": group["key"],
+            "currentStatus": group["currentStatus"], "mfgStartDate": group["mfgStartDate"], "dispatchDate": group["dispatchDate"],
         })
     return {"items": items, "groups": list(groups.values())}
 
 
-def existing_mutations(item, quantity=None, part_name=None, remove=False):
-    """Mutations that change an existing assembly or child: quantity, name, or removal."""
+DETAIL_COLUMNS = ("currentStatus", "mfgStartDate", "dispatchDate")
+
+
+def existing_mutations(item, quantity=None, part_name=None, remove=False, details=None):
+    """
+    Mutations that change an existing assembly, group or child: quantity, name, removal, or
+    `details` ({currentStatus?, mfgStartDate?, dispatchDate?}, assemblies and groups only).
+    """
     def set_cols(table, row_id, values):
         return {"kind": "set-columns-in-row", "tableName": table, "rowID": row_id, "columnValues": values}
 
@@ -608,6 +626,11 @@ def existing_mutations(item, quantity=None, part_name=None, remove=False):
             mutations.append(set_cols(ASSEMBLIES_TABLE, item["rowId"], {ASM["partName"]: name}))
         if item["drawingRowId"]:
             mutations.append(set_cols(DRAWINGS_TABLE, item["drawingRowId"], {DWG["partName"]: name}))
+    changed = {k: v for k, v in (details or {}).items() if k in DETAIL_COLUMNS and v and v != item.get(k)}
+    if changed and item["kind"] in ("assembly", "group"):
+        mutations.append(set_cols(ASSEMBLIES_TABLE, item["rowId"], {ASM[k]: v for k, v in changed.items()}))
+        if "currentStatus" in changed and item["drawingRowId"]:
+            mutations.append(set_cols(DRAWINGS_TABLE, item["drawingRowId"], {DWG["currentStatus"]: changed["currentStatus"]}))
     return mutations
 
 
@@ -634,6 +657,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     """
     existing_by_part = {part_key(i["project"], i["partNumber"]): i for i in existing["items"]}
     existing_by_key = {i["key"]: i for i in existing["items"]}
+    existing_by_key.update({g["key"]: g for g in existing["groups"] if "key" in g})
     existing_groups = {}
     for g in existing["groups"]:
         existing_groups.setdefault(part_key(g["project"], g["name"]), g)
@@ -696,15 +720,30 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     edits = []
     for change in changes:
         item = existing_by_key.get(change.get("key"))
-        if not item or item["key"] in matched_keys:
-            continue  # gone since the page loaded, or updated by its PO line instead
+        if not item:
+            continue  # gone since the page loaded
+        details = {}
+        if change.get("currentStatus"):
+            if change["currentStatus"] not in STATUSES:
+                errors.append({"rowId": item["key"], "message": f"Status must be one of {', '.join(STATUSES)}"})
+                continue
+            details["currentStatus"] = change["currentStatus"]
+        for key in ("mfgStartDate", "dispatchDate"):
+            if change.get(key):
+                details[key] = to_date(change[key])
+                if not details[key]:
+                    errors.append({"rowId": item["key"], "message": f"{key} {change[key]!r} is not a date"})
+        if item["key"] in matched_keys:
+            # Its PO line sets the quantity and it can't be removed here; status and dates still apply
+            edits.append((item, None, None, False, details))
+            continue
         quantity = change.get("quantity")
         if quantity is not None:
             quantity = to_number(quantity)
             if quantity is None or quantity <= 0:
                 errors.append({"rowId": item["key"], "message": "Quantity must be a number above 0"})
                 continue
-        edits.append((item, quantity, change.get("partName"), bool(change.get("remove"))))
+        edits.append((item, quantity, change.get("partName"), bool(change.get("remove")), details))
 
     if errors:
         return [], errors
@@ -768,8 +807,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             "drawings": [],
         })
 
-    for item, quantity, part_name, remove in edits:
-        mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove)
+    for item, quantity, part_name, remove, details in edits:
+        mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove, details=details)
         if mutations:
             units.append({
                 "kind": "edit",
@@ -778,6 +817,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 "rowIds": [],
                 "removal": remove,
                 "quantityUpdate": not remove and quantity is not None and quantity != item["quantity"],
+                "detailsUpdate": not remove and any(details.get(k) and details[k] != item.get(k) for k in DETAIL_COLUMNS),
                 "mutations": mutations,
                 "drawings": [],
             })
@@ -998,8 +1038,15 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
         "groups": groups,
         "rows": rows,
         "existing": [
-            {key: i[key] for key in ("key", "kind", "project", "partNumber", "partName", "quantity", "parent")}
+            {key: i[key] for key in (
+                "key", "kind", "project", "partNumber", "partName", "quantity", "parent",
+                "groupKey", "currentStatus", "mfgStartDate", "dispatchDate",
+            )}
             for i in existing["items"]
+        ],
+        "existingGroups": [
+            {key: g[key] for key in ("key", "name", "project", "currentStatus", "mfgStartDate", "dispatchDate")}
+            for g in existing["groups"]
         ],
         "submittedCount": sum(1 for i in items if i["addedAsAssembly"] and not i["groupMaster"]),
     }
@@ -1269,6 +1316,7 @@ async def submit_po_assemblies(
         "groupAssemblies": sum(1 for u in done if u["kind"] == "group"),
         "childParts": sum(u.get("childParts", 0) for u in done),
         "quantityUpdates": sum(1 for u in done if u.get("quantityUpdate")),
+        "detailUpdates": sum(1 for u in done if u.get("detailsUpdate")),
         "removals": sum(1 for u in done if u.get("removal")),
         "drawingsCreated": sum(1 for j in jobs if not j["existingRowId"]),
         "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),

@@ -186,7 +186,7 @@ def test_submit_creates_assemblies_and_child_parts():
     assert res.status_code == 200, res.text
     assert res.json() == {
         "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
-        "quantityUpdates": 0, "removals": 0,
+        "quantityUpdates": 0, "detailUpdates": 0, "removals": 0,
         "drawingsCreated": 4, "drawingsUpdated": 0, "emailSent": False, "warnings": [],
     }
 
@@ -318,7 +318,7 @@ def with_existing(glide):
         {"$rowID": "asm-e1", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "E-1", pa.ASM["partName"]: "Existing one",
          pa.ASM["packageAssembly"]: False, pa.ASM["currentStatus"]: "Mfg", pa.ASM["quantity"]: 5},
         {"$rowID": "asm-kit", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "KIT-1", pa.ASM["partName"]: "Kit",
-         pa.ASM["packageAssembly"]: True},
+         pa.ASM["packageAssembly"]: True, pa.ASM["currentStatus"]: "Sampling", pa.ASM["mfgStartDate"]: "2026-10-20T00:00:00.000Z"},
         {"$rowID": "asm-old", pa.ASM["project"]: "Proj A", pa.ASM["partNumber"]: "OLD", pa.ASM["currentStatus"]: "Cancelled"},
         {"$rowID": "asm-other", pa.ASM["project"]: "Proj Z", pa.ASM["partNumber"]: "Z-1"},
     ]
@@ -337,8 +337,13 @@ def with_existing(glide):
 def test_get_lists_existing_assemblies_and_groups():
     body = client_for(with_existing(FakeGlide(sample_items()))).get(f"/po-assemblies/{PO}").json()
     assert body["existing"] == [
-        {"key": "a:asm-e1", "kind": "assembly", "project": "Proj A", "partNumber": "E-1", "partName": "Existing one", "quantity": 5, "parent": ""},
-        {"key": "c:cp-k1", "kind": "child", "project": "Proj A", "partNumber": "K-1", "partName": "Kit part", "quantity": 3, "parent": "Kit"},
+        {"key": "a:asm-e1", "kind": "assembly", "project": "Proj A", "partNumber": "E-1", "partName": "Existing one", "quantity": 5,
+         "parent": "", "groupKey": None, "currentStatus": "Mfg", "mfgStartDate": "", "dispatchDate": ""},
+        {"key": "c:cp-k1", "kind": "child", "project": "Proj A", "partNumber": "K-1", "partName": "Kit part", "quantity": 3,
+         "parent": "Kit", "groupKey": "g:asm-kit", "currentStatus": "Sampling", "mfgStartDate": "2026-10-20", "dispatchDate": ""},
+    ]
+    assert body["existingGroups"] == [
+        {"key": "g:asm-kit", "name": "Kit", "project": "Proj A", "currentStatus": "Sampling", "mfgStartDate": "2026-10-20", "dispatchDate": ""},
     ]
     assert {"name": "Kit", "partNumber": "KIT-1", "rowId": "asm-kit", "project": "Proj A", "existing": True} in body["groups"]
 
@@ -542,3 +547,42 @@ def test_email_is_on_unless_turned_off(monkeypatch):
     assert pa.Mailer().enabled is True
     monkeypatch.setenv("PO_EMAIL_ENABLED", "false")
     assert pa.Mailer().enabled is False
+
+
+def test_existing_status_and_dates_can_be_edited():
+    glide = with_existing(FakeGlide([]))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
+        {"key": "a:asm-e1", "currentStatus": "Sampling", "dispatchDate": "2026-12-01"},
+        {"key": "g:asm-kit", "currentStatus": "Mfg", "mfgStartDate": "2026-10-25"},
+    ]})
+    assert res.status_code == 200, res.text
+    assert res.json()["detailUpdates"] == 2
+    asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    assert asm["asm-e1"][pa.ASM["currentStatus"]] == "Sampling"
+    assert asm["asm-e1"][pa.ASM["dispatchDate"]] == "2026-12-01"
+    assert asm["asm-kit"][pa.ASM["currentStatus"]] == "Mfg"
+    assert asm["asm-kit"][pa.ASM["mfgStartDate"]] == "2026-10-25"
+    drawings = {d["$rowID"]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
+    assert drawings["dw-e1"][pa.DWG["currentStatus"]] == "Sampling"
+
+
+def test_existing_edits_reject_bad_status_or_date():
+    glide = with_existing(FakeGlide([]))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
+        {"key": "a:asm-e1", "currentStatus": "Bogus"}, {"key": "g:asm-kit", "dispatchDate": "soon"},
+    ]})
+    assert res.status_code == 400
+    assert {e["rowId"] for e in res.json()["rowErrors"]} == {"a:asm-e1", "g:asm-kit"}
+    assert glide.calls == []
+
+
+def test_po_line_update_still_applies_status_and_date_edits():
+    items = [line_item("x", partNumber="E-1", partName="Existing one", quantity=8, project="Proj A")]
+    glide = with_existing(FakeGlide(items))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
+        {"key": "a:asm-e1", "quantity": 99, "currentStatus": "Sampling"},
+    ]})
+    assert res.status_code == 200, res.text
+    asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    assert asm["asm-e1"][pa.ASM["quantity"]] == 8  # the PO line's quantity wins
+    assert asm["asm-e1"][pa.ASM["currentStatus"]] == "Sampling"

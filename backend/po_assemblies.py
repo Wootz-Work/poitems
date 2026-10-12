@@ -648,14 +648,13 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     new assembly's row id.
     `errors` is a list of {rowId, message}; the plan must not run when it is non-empty.
 
-    `existing` (load_existing) changes what a line item becomes: one whose project and assembly
-    number already exist updates that assembly's quantity instead of creating it, and a group
-    whose name matches an existing group assembly in its project adds its members to that
-    assembly. `changes` are the page's edits to existing assemblies:
-    [{"key", "quantity"?, "partName"?, "remove"?}]. `poc` (the publisher's email) becomes the
-    Internal POC of every assembly created.
+    Every line item is created as a new assembly (or child), even when its number is already in
+    the project. `existing` (load_existing) only matters for groups: a group whose name matches an
+    existing group assembly in its project adds its members to that assembly. `changes` are the
+    page's edits to existing assemblies: [{"key", "quantity"?, "partName"?, "remove"?,
+    "currentStatus"?, "mfgStartDate"?, "dispatchDate"?}]. `poc` (the publisher's email) becomes
+    the Internal POC of every assembly created.
     """
-    existing_by_part = {part_key(i["project"], i["partNumber"]): i for i in existing["items"]}
     existing_by_key = {i["key"]: i for i in existing["items"]}
     existing_by_key.update({g["key"]: g for g in existing["groups"] if "key" in g})
     existing_groups = {}
@@ -670,13 +669,13 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             masters.setdefault(group_key(item["groupName"]), item)
 
     errors = []
-    standalone, groups, matched = [], {}, []
+    # Every PO item is created as a new assembly, even if its number is already in the project:
+    # the user removes duplicates on the page
+    standalone, groups = [], {}
     for item in open_items:
         if item["groupMaster"] or is_blank(item):
             continue
-        if item["project"] and part_key(item["project"], item["partNumber"]) in existing_by_part:
-            matched.append(item)
-        elif item["partOfGroup"] and item["groupName"]:
+        if item["partOfGroup"] and item["groupName"]:
             groups.setdefault(group_key(item["groupName"]), []).append(item)
         else:
             standalone.append(item)
@@ -687,22 +686,19 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         elif projects and item["project"] not in projects:
             errors.append({"rowId": item["rowId"], "message": f"Project \"{item['project']}\" is not on this PO"})
 
-    def check_required(item, new=True):
+    def check_required(item):
         if not item["partNumber"]:
             errors.append({"rowId": item["rowId"], "message": "Assembly number is required"})
         if item["quantity"] is None or item["quantity"] <= 0:
             errors.append({"rowId": item["rowId"], "message": "Quantity is required"})
         check_project(item)
-        # Dates are only needed for assemblies being created, not for quantity updates
-        if new and not item["mfgStartDate"]:
+        if not item["mfgStartDate"]:
             errors.append({"rowId": item["rowId"], "message": "Mfg start date is required"})
-        if new and not item["dispatchDate"]:
+        if not item["dispatchDate"]:
             errors.append({"rowId": item["rowId"], "message": "Dispatch date is required"})
 
     for item in standalone:
         check_required(item)
-    for item in matched:
-        check_required(item, new=False)
 
     for key, members in groups.items():
         for item in members:
@@ -716,7 +712,6 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                     "message": f"All items in \"{name}\" must go to the same project",
                 })
 
-    matched_keys = {existing_by_part[part_key(i["project"], i["partNumber"])]["key"] for i in matched}
     edits = []
     for change in changes:
         item = existing_by_key.get(change.get("key"))
@@ -733,10 +728,6 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 details[key] = to_date(change[key])
                 if not details[key]:
                     errors.append({"rowId": item["key"], "message": f"{key} {change[key]!r} is not a date"})
-        if item["key"] in matched_keys:
-            # Its PO line sets the quantity and it can't be removed here; status and dates still apply
-            edits.append((item, None, None, False, details))
-            continue
         quantity = change.get("quantity")
         if quantity is not None:
             quantity = to_number(quantity)
@@ -795,17 +786,6 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         }
 
     units = []
-    for item in matched:
-        target = existing_by_part[part_key(item["project"], item["partNumber"])]
-        units.append({
-            "kind": "update",
-            "project": item["project"],
-            "label": item["partNumber"],
-            "rowIds": [item["rowId"]],
-            "quantityUpdate": item["quantity"] != target["quantity"],
-            "mutations": existing_mutations(target, quantity=item["quantity"]) + [mark_submitted(item["rowId"], item["project"])],
-            "drawings": [],
-        })
 
     for item, quantity, part_name, remove, details in edits:
         mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove, details=details)

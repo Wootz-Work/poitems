@@ -269,12 +269,22 @@ def _env_flag(name, default=False):
     return value in ("1", "true", "yes", "on")
 
 
+def _env_first(*names):
+    """The first of these environment variables that is set and not blank."""
+    for name in names:
+        value = os.getenv(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
 class Mailer:
     """
     Sends the "now in manufacturing" email through Microsoft Graph, as the mailbox MS_SENDER.
     On by default; PO_EMAIL_ENABLED=false turns it off.
-    Env: MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET (an Azure app registration with the Mail.Send
-    application permission, admin-consented), MS_SENDER (the mailbox to send from),
+    Env: MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET (an Azure app registration
+    with the Mail.Send application permission, admin-consented), EMAIL_FROM_ADDRESS (the mailbox to
+    send from). The shorter MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET, MS_SENDER work too.
     PO_EMAIL_ADMIN_ROLE (the Users table role that receives it, default "Admin").
     """
 
@@ -283,10 +293,11 @@ class Mailer:
     def __init__(self, http=None):
         self.enabled = _env_flag("PO_EMAIL_ENABLED", default=True)
         self.admin_role = os.getenv("PO_EMAIL_ADMIN_ROLE", "Admin")
-        self.tenant = os.getenv("MS_TENANT_ID", "")
-        self.client_id = os.getenv("MS_CLIENT_ID", "")
-        self.client_secret = os.getenv("MS_CLIENT_SECRET", "")
-        self.sender = os.getenv("MS_SENDER", "")
+        # The MS_GRAPH_* / EMAIL_FROM_ADDRESS names are the ones Wootz's other Render services use
+        self.tenant = _env_first("MS_GRAPH_TENANT_ID", "MS_TENANT_ID")
+        self.client_id = _env_first("MS_GRAPH_CLIENT_ID", "MS_CLIENT_ID")
+        self.client_secret = _env_first("MS_GRAPH_CLIENT_SECRET", "MS_CLIENT_SECRET")
+        self.sender = _env_first("EMAIL_FROM_ADDRESS", "MS_SENDER")
         self._http = http
         self._token, self._token_expires = None, 0.0
 
@@ -317,7 +328,9 @@ class Mailer:
 
     async def send(self, to, cc, subject, body):
         if not (self.tenant and self.client_id and self.client_secret and self.sender):
-            raise RuntimeError("Email is on but MS_TENANT_ID, MS_CLIENT_ID, MS_CLIENT_SECRET or MS_SENDER is not set")
+            raise RuntimeError(
+                "Email is on but MS_GRAPH_TENANT_ID, MS_GRAPH_CLIENT_ID, MS_GRAPH_CLIENT_SECRET or EMAIL_FROM_ADDRESS is not set"
+            )
         recipients = lambda emails: [{"emailAddress": {"address": e}} for e in emails]
         message = {
             "subject": subject,
@@ -370,7 +383,9 @@ def submitted_email(po, submitted_by_name, units):
             projects.append(unit["project"])
     names = ", ".join(projects)
     verb = "is" if len(projects) == 1 else "are"
-    subject = f"{names} {verb} now in manufacturing"
+    # PO line items published: one per standalone assembly, one per child added to a group
+    line_items = sum(1 for u in units if u["kind"] == "standalone") + sum(u.get("childParts", 0) for u in units)
+    subject = f"Published to Mfg: {names} ({line_items} line item{'' if line_items == 1 else 's'})"
     body = (
         "Hi team,\n\n"
         f"{names} {verb} now in manufacturing. Submitted by {submitted_by_name}\n\n"

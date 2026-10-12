@@ -348,17 +348,16 @@ def test_get_lists_existing_assemblies_and_groups():
     assert {"name": "Kit", "partNumber": "KIT-1", "rowId": "asm-kit", "project": "Proj A", "existing": True} in body["groups"]
 
 
-def test_po_line_matching_an_existing_assembly_updates_its_quantity():
+def test_po_line_with_an_existing_number_is_still_created():
+    # No matching: the item becomes a new assembly; the existing one is left alone
     items = [line_item("x", partNumber="e-1", partName="Existing one", quantity=8, project="Proj A")]
     glide = with_existing(FakeGlide(items))
     res = client_for(glide).post(f"/po-assemblies/{PO}/submit")
     assert res.status_code == 200, res.text
-    assert res.json()["quantityUpdates"] == 1
-    assert res.json()["standaloneAssemblies"] == 0
-    assert len(glide.tables[pa.ASSEMBLIES_TABLE]) == 4  # nothing created
-    drawings = {d["$rowID"]: d for d in glide.tables[pa.DRAWINGS_TABLE]}
-    assert drawings["dw-e1"][pa.DWG["quantity"]] == 8
-    assert {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}["asm-e1"][pa.ASM["quantity"]] == 8
+    assert res.json()["standaloneAssemblies"] == 1 and res.json()["quantityUpdates"] == 0
+    asm = glide.tables[pa.ASSEMBLIES_TABLE]
+    assert [a[pa.ASM["partNumber"]] for a in asm].count("e-1") == 1
+    assert {a["$rowID"]: a for a in asm}["asm-e1"][pa.ASM["quantity"]] == 5
     assert glide.tables[pa.LINE_ITEMS_TABLE][0][pa.LI["addedAsAssembly"]] is True
 
 
@@ -477,11 +476,8 @@ def test_sniff_content_type_trusts_the_file_bytes():
     assert pa.sniff_content_type(b"PK\x03\x04 docx", "application/octet-stream") == "application/octet-stream"
 
 
-def test_dates_are_required_for_new_assemblies_only():
-    items = [
-        line_item("x", partNumber="S-1", quantity=2, project="Proj A", mfgStartDate="", dispatchDate=""),
-        line_item("y", partNumber="E-1", quantity=8, project="Proj A", mfgStartDate="", dispatchDate=""),
-    ]
+def test_dates_are_required():
+    items = [line_item("x", partNumber="S-1", quantity=2, project="Proj A", mfgStartDate="", dispatchDate="")]
     res = client_for(with_existing(FakeGlide(items))).post(f"/po-assemblies/{PO}/submit")
     assert res.status_code == 400
     assert res.json()["rowErrors"] == [
@@ -576,13 +572,13 @@ def test_existing_edits_reject_bad_status_or_date():
     assert glide.calls == []
 
 
-def test_po_line_update_still_applies_status_and_date_edits():
+def test_existing_edits_apply_alongside_new_items_with_the_same_number():
     items = [line_item("x", partNumber="E-1", partName="Existing one", quantity=8, project="Proj A")]
     glide = with_existing(FakeGlide(items))
     res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
-        {"key": "a:asm-e1", "quantity": 99, "currentStatus": "Sampling"},
+        {"key": "a:asm-e1", "remove": True},
     ]})
     assert res.status_code == 200, res.text
     asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
-    assert asm["asm-e1"][pa.ASM["quantity"]] == 8  # the PO line's quantity wins
-    assert asm["asm-e1"][pa.ASM["currentStatus"]] == "Sampling"
+    assert asm["asm-e1"][pa.ASM["currentStatus"]] == "Cancelled"  # the old one removed
+    assert res.json()["standaloneAssemblies"] == 1  # the PO's one created

@@ -230,7 +230,7 @@
         .qty-wrap .in { min-height: 0; flex: 1; }
         .was { font-size: 11px; color: var(--faint); text-align: right; padding: 0 12px 6px; margin-top: -8px; }
         .cell.stack { flex-direction: column; align-items: stretch; justify-content: center; gap: 3px; padding: 8px 12px; }
-        .match-note { font-size: 11px; color: var(--primary-soft); line-height: 1.3; }
+        
 
         .select {
             width: 100%; height: 32px; display: flex; align-items: center; gap: 8px; padding: 0 10px;
@@ -373,7 +373,7 @@
             d.setDate(d.getDate() + 1);
             return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
         }
-        // Last values set with "Set for all", used for rows added afterwards
+        // Last values set in the dates bar, used for rows added afterwards
         const defaultDates = { mfgStartDate: tomorrow(), dispatchDate: "" };
         let existing = [];         // assemblies already in the PO's projects
         let existingGroups = [];   // their group assemblies (a child's status and dates are its group's)
@@ -443,9 +443,6 @@
             scheduleSave();
         }
 
-        const existingByPart = () => new Map(existing.map((e) => [partKey(e.project, e.partNumber), e]));
-        let existingIndex = new Map();
-        const matchOf = (rec) => (rec.project && rec.partNumber ? existingIndex.get(partKey(rec.project, rec.partNumber)) : null);
 
         function findGroup(name) {
             return groups.find((g) => lower(g.name) === lower(name));
@@ -622,15 +619,11 @@
 
         // ---------- Validation and summary ----------
 
-        function newRows() { return rows.filter((r) => !matchOf(r)); }
-        function matchedRows() { return rows.filter((r) => matchOf(r)); }
+        // Every PO row is created as a new assembly; duplicates of existing ones are removed by the user
+        function newRows() { return rows; }
 
         function rowProblems(rec) {
             const problems = {};
-            if (matchOf(rec)) {
-                if (!(rec.quantity > 0)) problems.quantity = true;
-                return problems;
-            }
             if (isBlank(rec)) return problems;
             if (!rec.partNumber) problems.partNumber = true;
             if (!(rec.quantity > 0)) problems.quantity = true;
@@ -647,15 +640,11 @@
 
         function summary() {
             const add = newRows().filter((r) => !isBlank(r));
-            const matchedKeys = new Set(matchedRows().filter((r) => r.quantity !== matchOf(r).quantity).map((r) => matchOf(r).key));
-            const editedKeys = Object.entries(existingEdits).filter(([, e]) => !e.remove).map(([k]) => k);
-            const updates = new Set([...matchedKeys, ...editedKeys]).size;
+            const updates = Object.values(existingEdits).filter((e) => !e.remove).length;
             const removals = Object.values(existingEdits).filter((e) => e.remove).length;
-            const renames = 0;
-            const matched = matchedRows().length;
             const missing = rows.reduce((n, r) => n + Object.keys(rowProblems(r)).length, 0) +
                 existing.reduce((n, e) => n + Object.keys(existingProblems(e)).length, 0);
-            return { add: add.length, updates, removals, renames, matched, missing, work: add.length + matched + Object.keys(existingEdits).length };
+            return { add: add.length, updates, removals, missing, work: add.length + Object.keys(existingEdits).length };
         }
 
         function refreshChrome() {
@@ -703,7 +692,6 @@
         function renderSoon() { setTimeout(render, 0); }
 
         function renderNow() {
-            existingIndex = existingByPart();
             const focus = document.activeElement?.dataset?.focus;
             const caret = document.activeElement?.selectionStart;
             const table = $("table");
@@ -768,11 +756,10 @@
                 },
             }));
             const datesBar = h("div", { class: "dates-bar" },
-                h("span", {}, selected.size ? `Set for ${selected.size} selected:` : "Set for all items:"),
+                selected.size ? h("span", {}, `For ${selected.size} selected:`) : "",
                 dateField("mfgStartDate", "Mfg start date"),
                 dateField("dispatchDate", "Dispatch date"));
-            // A row whose assembly is already in its project stays here, marked, instead of moving below
-            const body = list.length ? list.map((rec) => (matchOf(rec) ? renderMatchedRow(matchOf(rec), rec) : renderNewRow(rec)))
+            const body = list.length ? list.map(renderNewRow)
                 : [h("div", { class: "empty-note" }, projects.length ? "No items. Use Add row to add one." : "This PO has no projects yet, so nothing can be published.")];
             return h("div", {}, head, datesBar, columnHeader(true), ...body,
                 h("div", { class: "add-row-line" }, h("button", { onclick: addRow }, "+ Add row")));
@@ -878,11 +865,8 @@
                 const bucket = byProject.get(lower(item.project));
                 if (bucket) bucket.items.push(item);
             }
-            // Assemblies a PO row above updates are shown there, not repeated here
-            const matched = new Set(matchedRows().map((r) => matchOf(r).key));
             const sections = [];
-            for (const { name, items: all } of byProject.values()) {
-                const items = all.filter((item) => !matched.has(item.key));
+            for (const { name, items } of byProject.values()) {
                 if (!items.length) continue;
                 sections.push(h("div", { class: "section-head existing-head" },
                     h("span", { class: "name" }, `Already in ${name}`),
@@ -927,40 +911,6 @@
                 h("span", { class: "cell center" }, removed
                     ? h("button", { class: "undo", onclick: () => { editExisting(item.key, { remove: false }); render(); } }, "Undo")
                     : h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15))),
-            );
-        }
-
-        // A PO line item whose assembly already exists in its project: publishing updates that assembly's qty
-        function renderMatchedRow(item, rec) {
-            return h("div", { class: `grid row${selected.has(rec._localId) ? " selected" : ""}`, style: item.parent ? rowTint(item.parent) : "" },
-                h("span", { class: "cell center" }, h("input", {
-                    type: "checkbox", "aria-label": "Select row", checked: selected.has(rec._localId),
-                    onchange: (e) => { e.target.checked ? selected.add(rec._localId) : selected.delete(rec._localId); render(); },
-                })),
-                h("span", { class: "cell pad" }, lockedParent(item)),
-                h("span", { class: "cell stack" },
-                    h("span", { class: "mono" }, item.partNumber),
-                    h("span", { class: "match-note" }, `In ${item.project} · updates its qty`)),
-                h("span", { class: "cell text", style: "color:var(--text-2)" }, item.partName || rec.partName),
-                h("span", { class: "cell", "data-check": `row|${rec._localId}|quantity` }, h("span", { class: "qty-wrap" },
-                    h("input", {
-                        class: "in num", value: rec.quantity == null ? "" : String(rec.quantity), inputmode: "decimal", placeholder: "Required",
-                        "aria-label": "Quantity from this PO", "data-focus": `${rec._localId}:quantity`,
-                        oninput: (e) => {
-                            const v = e.target.value.trim();
-                            rec.quantity = v === "" ? null : (isNaN(Number(v)) ? rec.quantity : Number(v));
-                            markDirty(rec, ["quantity"]);
-                            refreshChrome();
-                        },
-                        onchange: renderSoon,
-                    }),
-                    rec.quantity !== item.quantity && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
-                h("span", { class: "cell pad" }, h("button", {
-                    class: "select", "aria-haspopup": "menu", "aria-expanded": "false",
-                    onclick: (e) => openProjectMenu(e.currentTarget, [rec]),
-                }, h("span", { class: "label" }, rec.project), icon("chevron", 14, "chev"))),
-                ...existingDetailCells(item, false),
-                h("span", { class: "cell center" }, h("button", { class: "icon-btn", "aria-label": "Remove this PO line", title: "Remove this PO line", onclick: () => removeRows([rec]) }, icon("trash", 15))),
             );
         }
 
@@ -1127,11 +1077,6 @@
                     targets.forEach((rec) => { rec.project = p; markDirty(rec, ["project"]); });
                     closeMenu();
                     render();
-                    const already = targets.filter((rec) => matchOf(rec)).length;
-                    if (already) {
-                        toast(already === 1 ? `This item is already in ${p}: publishing will update its quantity.`
-                            : `${already} items are already in ${p}: publishing will update their quantities.`);
-                    }
                 }))];
             });
         }
@@ -1532,7 +1477,7 @@
                 }
                 rows.push(rec);
             }
-            // "Set for all items" starts from the date every row already shares, if they do
+            // The dates bar starts from the date every row already shares, if they do
             for (const field of ["mfgStartDate", "dispatchDate"]) {
                 const values = new Set(rows.map((r) => r[field] || ""));
                 defaultDates[field] = values.size === 1 ? [...values][0] : (field === "mfgStartDate" ? tomorrow() : "");

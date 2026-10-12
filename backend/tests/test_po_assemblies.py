@@ -302,7 +302,7 @@ def test_email_only_when_enabled_and_goes_to_admins_cc_submitter():
     assert res.json()["emailSent"] is True
     to, cc, subject, body = on.sent[0]
     assert to == ["boss@x.com"] and cc == ["dev@x.com"]
-    assert subject == "Proj A is now in manufacturing"
+    assert subject == "Published to Mfg: Proj A (3 line items)"
     assert body == "Hi team,\n\nProj A is now in manufacturing. Submitted by Ayush Singh\n\nHappy manufacturing!\n"
 
 
@@ -493,9 +493,10 @@ def test_drawing_file_number_reads_the_file_name():
 
 
 def test_email_lists_every_project_and_falls_back_to_the_email():
-    units = [{"project": "Ekta 6"}, {"project": "Ekta 7"}, {"project": "Ekta 6"}]
+    units = [{"project": "Ekta 6", "kind": "standalone"}, {"project": "Ekta 7", "kind": "group", "childParts": 3},
+             {"project": "Ekta 6", "kind": "edit"}]
     subject, body = pa.submitted_email({}, pa.user_name([], "x@y.com"), units)
-    assert subject == "Ekta 6, Ekta 7 are now in manufacturing"
+    assert subject == "Published to Mfg: Ekta 6, Ekta 7 (4 line items)"
     assert "Ekta 6, Ekta 7 are now in manufacturing. Submitted by x@y.com" in body
 
 
@@ -593,3 +594,8 @@ def test_mailer_reads_the_ms_graph_variable_names(monkeypatch):
     monkeypatch.setenv("EMAIL_FROM_ADDRESS", "mfg@wootz.work")
     mailer = pa.Mailer()
     assert (mailer.tenant, mailer.client_id, mailer.client_secret, mailer.sender) == ("t2", "c2", "s2", "mfg@wootz.work")
+
+
+def test_email_subject_counts_one_line_item():
+    subject, _ = pa.submitted_email({}, "A", [{"project": "Ekta 6", "kind": "standalone"}])
+    assert subject == "Published to Mfg: Ekta 6 (1 line item)"

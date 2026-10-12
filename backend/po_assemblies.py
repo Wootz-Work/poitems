@@ -383,7 +383,9 @@ def submitted_email(po, submitted_by_name, units):
             projects.append(unit["project"])
     names = ", ".join(projects)
     verb = "is" if len(projects) == 1 else "are"
-    subject = f"{names} {verb} now in manufacturing"
+    # PO line items published: one per standalone assembly, one per child added to a group
+    line_items = sum(1 for u in units if u["kind"] == "standalone") + sum(u.get("childParts", 0) for u in units)
+    subject = f"Published to Mfg: {names} ({line_items} line item{'' if line_items == 1 else 's'})"
     body = (
         "Hi team,\n\n"
         f"{names} {verb} now in manufacturing. Submitted by {submitted_by_name}\n\n"

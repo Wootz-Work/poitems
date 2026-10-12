@@ -532,9 +532,10 @@ def test_graph_mailer_gets_a_token_and_sends(monkeypatch):
 def test_graph_mailer_needs_its_settings(monkeypatch):
     import asyncio
 
-    for key in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_SENDER"):
+    for key in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_SENDER",
+                "MS_GRAPH_TENANT_ID", "MS_GRAPH_CLIENT_ID", "MS_GRAPH_CLIENT_SECRET", "EMAIL_FROM_ADDRESS"):
         monkeypatch.delenv(key, raising=False)
-    with pytest.raises(RuntimeError, match="MS_SENDER"):
+    with pytest.raises(RuntimeError, match="EMAIL_FROM_ADDRESS"):
         asyncio.run(pa.Mailer().send(["a@b.com"], [], "s", "b"))
 
 
@@ -582,3 +583,13 @@ def test_existing_edits_apply_alongside_new_items_with_the_same_number():
     asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
     assert asm["asm-e1"][pa.ASM["currentStatus"]] == "Cancelled"  # the old one removed
     assert res.json()["standaloneAssemblies"] == 1  # the PO's one created
+
+def test_mailer_reads_the_ms_graph_variable_names(monkeypatch):
+    for key in ("MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET", "MS_SENDER"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MS_GRAPH_TENANT_ID", "t2")
+    monkeypatch.setenv("MS_GRAPH_CLIENT_ID", "c2")
+    monkeypatch.setenv("MS_GRAPH_CLIENT_SECRET", "s2")
+    monkeypatch.setenv("EMAIL_FROM_ADDRESS", "mfg@wootz.work")
+    mailer = pa.Mailer()
+    assert (mailer.tenant, mailer.client_id, mailer.client_secret, mailer.sender) == ("t2", "c2", "s2", "mfg@wootz.work")

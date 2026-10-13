@@ -30,33 +30,8 @@
             --viewer: #0b0b0c;
             --shadow: 0 18px 44px rgba(0, 0, 0, .6);
             --tint-alpha: .055;
+            /* Always dark, whatever the viewer's system theme */
             color-scheme: dark;
-        }
-
-        @media (prefers-color-scheme: light) {
-            :root {
-                --bg: #f5f6f8;
-                --panel: #ffffff;
-                --panel-2: #f7f7f9;
-                --field: #ffffff;
-                --menu: #ffffff;
-                --line: #e7e7ea;
-                --line-strong: #dcdce0;
-                --text: #18181b;
-                --text-2: #3f3f46;
-                --muted: #5f5f68;
-                --faint: #71717a;
-                --icon: #8a8a93;
-                --primary-soft: #a87700;
-                --danger: #c62828;
-                --danger-soft: rgba(220, 38, 38, .06);
-                --ok: #16a34a;
-                --hover: #f0f0f3;
-                --viewer: #e9ebef;
-                --shadow: 0 16px 40px rgba(24, 24, 27, .16);
-                --tint-alpha: .08;
-                color-scheme: light;
-            }
         }
 
         * { box-sizing: border-box; }
@@ -115,6 +90,13 @@
             border: 1px solid var(--line-strong); background: transparent; border-radius: 8px;
         }
         .btn-outline:hover:not(:disabled) { background: var(--hover); }
+        /* Secondary: Add row, tinted so it draws the eye */
+        .btn-secondary {
+            height: 32px; padding: 0 14px; display: inline-flex; align-items: center; gap: 6px; font-weight: 600;
+            border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent); border-radius: 8px;
+            background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary-soft);
+        }
+        .btn-secondary:hover:not(:disabled) { background: color-mix(in srgb, var(--primary) 28%, transparent); }
 
         /* ---------- Layout ---------- */
         main {
@@ -323,6 +305,8 @@
         </section>
         <div class="splitter" id="splitter" role="separator" aria-orientation="vertical" aria-label="Resize the document and table" tabindex="0"></div>
         <section class="pane items" aria-label="Assemblies">
+            <!-- Above the table's sideways scroll, so Add row and the dates are always in view -->
+            <div id="items-head" hidden></div>
             <div class="table-scroll" id="table-scroll">
                 <div class="loading" id="loading">Loading line items…</div>
                 <div class="table" id="table" hidden></div>
@@ -695,7 +679,11 @@
             const focus = document.activeElement?.dataset?.focus;
             const caret = document.activeElement?.selectionStart;
             const table = $("table");
-            table.replaceChildren(renderNewSection(), ...renderExistingSections(), h("div", { class: "footer", id: "footer" }));
+            const po = renderNewSection();
+            $("items-head").replaceChildren(po.head, po.datesBar);
+            table.replaceChildren(po.table, ...renderExistingSections(), h("div", { class: "footer", id: "footer" }));
+            const headFocus = focus && $("items-head").querySelector(`[data-focus="${CSS.escape(focus)}"]`);
+            if (headFocus) headFocus.focus();
             if (focus) {
                 const el = table.querySelector(`[data-focus="${CSS.escape(focus)}"]`);
                 if (el) { el.focus(); if (caret != null && el.setSelectionRange) try { el.setSelectionRange(caret, caret); } catch { } }
@@ -742,7 +730,7 @@
                     h("span", { class: "name" }, "PO items"),
                     h("span", { class: "count" }, String(list.filter((r) => !isBlank(r)).length)),
                     h("span", { class: "spacer" }),
-                    h("button", { class: "btn-outline", onclick: addRow }, icon("plus"), "Add row"),
+                    h("button", { class: "btn-secondary", onclick: addRow }, icon("plus"), "Add row"),
                 );
             }
             const targets = () => (selected.size ? [...selected].map((id) => records.get(id)) : newRows());
@@ -761,8 +749,12 @@
                 dateField("dispatchDate", "Dispatch date"));
             const body = list.length ? list.map(renderNewRow)
                 : [h("div", { class: "empty-note" }, projects.length ? "No items. Use Add row to add one." : "This PO has no projects yet, so nothing can be published.")];
-            return h("div", {}, head, datesBar, columnHeader(true), ...body,
-                h("div", { class: "add-row-line" }, h("button", { onclick: addRow }, "+ Add row")));
+            return {
+                head,
+                datesBar,
+                table: h("div", {}, columnHeader(true), ...body,
+                    h("div", { class: "add-row-line" }, h("button", { onclick: addRow }, "+ Add row"))),
+            };
         }
 
         function parentButton(rec, onOpen) {
@@ -1487,6 +1479,7 @@
             if (!document.querySelector("#doc-tabs .tab")) renderDocs(body.po);
             $("loading").hidden = true;
             $("table").hidden = false;
+            $("items-head").hidden = false;
             render();
             if (hasDirty()) scheduleSave(); else setStatus("saved", "Saved");
         }

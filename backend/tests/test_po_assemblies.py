@@ -32,6 +32,11 @@ class FakeGlide:
             pa.ASSEMBLIES_TABLE: [],
             pa.CHILD_PARTS_TABLE: [],
             pa.DRAWINGS_TABLE: [],
+            pa.PROCESS_ASSEMBLY_TABLE: [],
+            pa.ALL_PROJECTS_TABLE: [
+                {"$rowID": "prj-a", pa.PROJECT_COMPANY: "Proj", pa.PROJECT_SEQUENCE: "A", pa.PROJECT_BROWSER_VISIBILITY: False},
+                {"$rowID": "prj-b", pa.PROJECT_COMPANY: "Proj", pa.PROJECT_SEQUENCE: "B"},
+            ],
             pa.USERS_TABLE: [
                 {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin", pa.USER_NAME: "Boss"},
                 {"$rowID": "u2", pa.USER_EMAIL: "dev@x.com", pa.USER_ROLE: "User", pa.USER_NAME: "Ayush Singh"},
@@ -187,7 +192,7 @@ def test_submit_creates_assemblies_and_child_parts():
     assert res.json() == {
         "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
         "quantityUpdates": 0, "detailUpdates": 0, "removals": 0,
-        "drawingsCreated": 4, "drawingsUpdated": 0, "emailSent": False, "warnings": [],
+        "drawingsCreated": 4, "drawingsUpdated": 0, "processRows": 6, "emailSent": False, "warnings": [],
     }
 
     assemblies = glide.tables[pa.ASSEMBLIES_TABLE]
@@ -599,3 +604,47 @@ def test_mailer_reads_the_ms_graph_variable_names(monkeypatch):
 def test_email_subject_counts_one_line_item():
     subject, _ = pa.submitted_email({}, "A", [{"project": "Ekta 6", "kind": "standalone"}])
     assert subject == "Published to Mfg: Ekta 6 (1 line item)"
+
+
+def test_new_assemblies_get_the_default_processes_and_the_project_is_made_visible():
+    glide = with_existing(FakeGlide(submittable_items()))
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={
+        "user": "dev@x.com", "existingChanges": [{"key": "a:asm-e1", "quantity": 7}],
+    })
+    assert res.status_code == 200, res.text
+    assert res.json()["processRows"] == 6  # P-100 and the Fasteners group; not the edited E-1
+    rows = [(r[pa.PROC["assembly"]], r[pa.PROC["name"]], r[pa.PROC["phase"]], r[pa.PROC["project"]], r[pa.PROC["addedBy"]])
+            for r in glide.tables[pa.PROCESS_ASSEMBLY_TABLE]]
+    assert rows == [
+        ("P-100", "RM Procurement", "0", "Proj A", "dev@x.com"),
+        ("P-100", "Final QC", "Pre Final", "Proj A", "dev@x.com"),
+        ("P-100", "Packaging", "Final", "Proj A", "dev@x.com"),
+        ("Fasteners", "RM Procurement", "0", "Proj A", "dev@x.com"),
+        ("Fasteners", "Final QC", "Pre Final", "Proj A", "dev@x.com"),
+        ("Fasteners", "Packaging", "Final", "Proj A", "dev@x.com"),
+    ]
+    projects = {r["$rowID"]: r for r in glide.tables[pa.ALL_PROJECTS_TABLE]}
+    assert projects["prj-a"][pa.PROJECT_BROWSER_VISIBILITY] is True
+    assert pa.PROJECT_BROWSER_VISIBILITY not in projects["prj-b"]  # not touched by this publish
+
+
+def test_edits_alone_add_no_processes_and_unknown_projects_warn():
+    glide = with_existing(FakeGlide([]))
+    glide.tables[pa.ALL_PROJECTS_TABLE] = []
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [{"key": "a:asm-e1", "quantity": 7}]})
+    assert res.status_code == 200, res.text
+    assert res.json()["processRows"] == 0
+    assert glide.tables[pa.PROCESS_ASSEMBLY_TABLE] == []
+    assert any("Proj A" in w for w in res.json()["warnings"])
+
+
+def test_project_name_is_company_and_sequence():
+    rows = [
+        {"$rowID": "u185", pa.PROJECT_COMPANY: "Unnati", pa.PROJECT_SEQUENCE: 185.0},
+        {"$rowID": "u186", pa.PROJECT_COMPANY: "Unnati", pa.PROJECT_SEQUENCE: 186, pa.PROJECT_BROWSER_VISIBILITY: True},
+        {"$rowID": "e6", pa.PROJECT_COMPANY: "Ekta ", pa.PROJECT_SEQUENCE: "6"},
+    ]
+    assert pa.project_row_name(rows[0]) == "Unnati 185"
+    mutations, missing = pa.project_visibility_mutations(rows, ["unnati 185", "Unnati 186", "Ekta  6", "Nova 1"])
+    assert [m["rowID"] for m in mutations] == ["u185", "e6"]  # 186 is already visible
+    assert missing == ["Nova 1"]

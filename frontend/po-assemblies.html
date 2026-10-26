@@ -154,10 +154,10 @@
 
         /* ---------- Table ---------- */
         .table-scroll { flex: 1; min-height: 0; overflow: auto; }
-        .table { min-width: 1280px; }
+        .table { min-width: 1180px; }
         .grid {
             display: grid;
-            grid-template-columns: 40px minmax(150px, 1.1fr) minmax(140px, 1fr) minmax(170px, 1.5fr) 84px minmax(140px, 1fr) 128px 140px 140px 140px;
+            grid-template-columns: 40px minmax(150px, 1.1fr) minmax(140px, 1fr) minmax(170px, 1.5fr) 84px minmax(140px, 1fr) 128px 140px 140px 44px;
             align-items: stretch;
         }
         .section-head {
@@ -229,12 +229,15 @@
 
         .icon-btn { width: 30px; height: 30px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--icon); border-radius: 6px; }
         .icon-btn:hover { background: var(--hover); color: var(--text); }
-        .row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; width: 100%; padding: 0 6px; }
-        .btn-mini {
-            height: 28px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 7px;
-            background: transparent; color: var(--text-2); font-size: 12px; white-space: nowrap;
+        /* Square + / − in the first column of existing rows: add to / take out of this PO */
+        .btn-square {
+            width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; padding: 0;
+            border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent); border-radius: 7px;
+            background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary-soft);
         }
-        .btn-mini:hover { background: var(--hover); color: var(--text); }
+        .btn-square:hover { background: color-mix(in srgb, var(--primary) 28%, transparent); }
+        .btn-square.neutral { border-color: var(--line-strong); background: transparent; color: var(--muted); }
+        .btn-square.neutral:hover { background: var(--hover); color: var(--text); }
         .existing-note { font-size: 11px; color: var(--faint); }
         .undo { height: 28px; padding: 0 6px; border: none; background: transparent; color: var(--primary-soft); font-size: 12px; border-radius: 6px; }
 
@@ -397,6 +400,7 @@
             chevron: '<path d="m6 9 6 6 6-6"/>',
             trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/>',
             plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+            minus: '<path d="M5 12h14"/>',
             check: '<path d="M20 6 9 17l-5-5"/>',
             external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
         };
@@ -890,7 +894,7 @@
                 sections.push(h("div", { class: "section-head existing-head" },
                     h("span", { class: "name" }, `Already in ${name}`),
                     h("span", { class: "count" }, String(items.length)),
-                    h("span", { class: "note" }, "· Add an item to this PO to change it")));
+                    h("span", { class: "note" }, "· Use + to add an item to this PO and change it")));
                 sections.push(columnHeader(false));
                 for (const item of items) sections.push(renderExistingRow(item));
             }
@@ -908,7 +912,9 @@
             const removed = !!(existingEdits[item.key] || {}).remove;
             const details = existingTarget(item.groupKey || item.key) || item;
             return h("div", { class: `grid row${removed ? " removed" : ""}`, style: item.parent && !removed ? rowTint(item.parent) : "" },
-                h("span", { class: "cell" }),
+                h("span", { class: "cell center" }, removed ? "" : h("button", {
+                    class: "btn-square", "aria-label": `Add ${item.partNumber} to this PO`, title: "Add to PO", onclick: () => addToPo(item),
+                }, icon("plus", 15))),
                 h("span", { class: "cell pad" }, lockedParent(item)),
                 h("span", { class: "cell text mono muted strike" }, item.partNumber),
                 h("span", { class: "cell text strike", style: "color:var(--text-2)" }, item.partName),
@@ -917,12 +923,9 @@
                 h("span", { class: "cell text muted" }, details.currentStatus || "—"),
                 h("span", { class: "cell text muted" }, formatDate(details.mfgStartDate)),
                 h("span", { class: "cell text muted" }, formatDate(details.dispatchDate)),
-                h("span", { class: "cell" }, h("span", { class: "row-actions" }, removed
+                h("span", { class: "cell center" }, removed
                     ? h("button", { class: "undo", onclick: () => { editExisting(item.key, { remove: false }); render(); } }, "Undo")
-                    : [
-                        h("button", { class: "btn-mini", title: "Add to this PO to edit it", onclick: () => addToPo(item) }, "Add to PO"),
-                        h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15)),
-                    ])),
+                    : h("button", { class: "icon-btn", "aria-label": `Remove ${item.partNumber} from ${item.project}`, title: "Remove from project", onclick: () => { editExisting(item.key, { remove: true }); render(); } }, icon("trash", 15))),
             );
         }
 
@@ -933,7 +936,10 @@
             const name = edit.partName != null ? edit.partName : item.partName;
             const focusId = `ex-${item.key}`;
             return h("div", { class: "grid row", style: item.parent ? rowTint(item.parent) : "" },
-                h("span", { class: "cell" }),
+                h("span", { class: "cell center" }, h("button", {
+                    class: "btn-square neutral", "aria-label": `Take ${item.partNumber} out of this PO`,
+                    title: "Remove from PO (its changes are dropped)", onclick: () => moveBack(item),
+                }, icon("minus", 15))),
                 h("span", { class: "cell pad" }, lockedParent(item)),
                 h("span", { class: "cell stack" },
                     h("span", { class: "mono" }, item.partNumber),
@@ -952,8 +958,7 @@
                     edit.quantity != null && item.quantity != null ? h("span", { class: "was" }, `was ${item.quantity}`) : "")),
                 h("span", { class: "cell text muted" }, item.project),
                 ...existingDetailCells(item, false),
-                h("span", { class: "cell" }, h("span", { class: "row-actions" },
-                    h("button", { class: "btn-mini", title: "Take it out of this PO (its changes are dropped)", onclick: () => moveBack(item) }, "Remove from PO"))),
+                h("span", { class: "cell" }),
             );
         }
 

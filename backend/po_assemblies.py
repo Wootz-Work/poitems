@@ -38,6 +38,8 @@ ASSEMBLIES_TABLE = "native-table-0GrR50EycwTGYCIFfPMT"
 CHILD_PARTS_TABLE = "native-table-3HZdeQgfDL37ac2rc3kF"
 DRAWINGS_TABLE = "native-table-unGdNRqsjTPlBDZB2629"
 USERS_TABLE = "native-table-UDMQGdMm5t2u9QY1DxE5"
+PROCESS_ASSEMBLY_TABLE = "native-table-31284987-7862-409d-90ff-b863a3218ad9"
+ALL_PROJECTS_TABLE = "native-table-8ZLIhesfVzQwYVkjYYHy"
 
 # Extracted PO Items table: code key -> Glide column id
 LI = {
@@ -85,6 +87,26 @@ DWG = {
 }
 DRAWING_TYPE_ASSEMBLY = "Assembly"
 DRAWING_TYPE_PART = "Part"
+
+# Process assembly table
+PROC = {
+    "name": "Name",
+    "phase": "gfuzZ",
+    "assembly": "XPmf3",
+    "project": "baR8D",
+    "addedBy": "lwC9L",
+    "addedAt": "FkA5h",
+}
+# The processes every new assembly starts with: (process, phase)
+DEFAULT_PROCESSES = (
+    ("RM Procurement", "0"),
+    ("Final QC", "Pre Final"),
+    ("Packaging", "Final"),
+)
+
+# All projects table: "Name" holds the project name
+PROJECT_NAME = "Name"
+PROJECT_BROWSER_VISIBILITY = "LVpai"
 
 # Users table
 USER_EMAIL = "Email"
@@ -930,6 +952,44 @@ def drawing_mutation(job, assembly_row_id):
     return {"kind": "add-row-to-table", "tableName": DRAWINGS_TABLE, "columnValues": values}
 
 
+def process_mutations(units, added_by, added_at):
+    """The default process rows for every assembly created (standalone or new group), none for edits."""
+    mutations = []
+    for unit in units:
+        if unit["kind"] not in ("standalone", "group"):
+            continue
+        for name, phase in DEFAULT_PROCESSES:
+            values = {
+                PROC["name"]: name,
+                PROC["phase"]: phase,
+                PROC["assembly"]: unit["label"],  # the assembly number
+                PROC["project"]: unit["project"],
+                PROC["addedAt"]: added_at,
+            }
+            if added_by:
+                values[PROC["addedBy"]] = added_by
+            mutations.append({"kind": "add-row-to-table", "tableName": PROCESS_ASSEMBLY_TABLE, "columnValues": values})
+    return mutations
+
+
+def project_visibility_mutations(project_rows, projects):
+    """Turns Browser Visibility on for each project; returns (mutations, names not found)."""
+    by_name = {}
+    for row in project_rows:
+        by_name.setdefault(_text(row.get(PROJECT_NAME)).lower(), row)
+    mutations, missing = [], []
+    for project in projects:
+        row = by_name.get(_text(project).lower())
+        if row is None:
+            missing.append(project)
+        elif row.get(PROJECT_BROWSER_VISIBILITY) is not True:
+            mutations.append({
+                "kind": "set-columns-in-row", "tableName": ALL_PROJECTS_TABLE, "rowID": row.get("$rowID"),
+                "columnValues": {PROJECT_BROWSER_VISIBILITY: True},
+            })
+    return mutations, missing
+
+
 def batch_units(units):
     """Packs whole units into Glide calls of at most MAX_MUTATIONS_PER_CALL mutations."""
     batches, current, size = [], [], 0
@@ -1291,6 +1351,26 @@ async def submit_po_assemblies(
                 drawings_ok = False
                 warnings.append(f"The assemblies were created, but adding their drawings or approving the PO failed: {e}")
 
+        # Default processes for the new assemblies, and the projects made visible in the browser
+        process_rows = 0
+        if done:
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+            processes = process_mutations(done, submitted_by, now)
+            touched = []
+            for unit in done:
+                if unit["project"] not in touched:
+                    touched.append(unit["project"])
+            try:
+                visibility, missing = project_visibility_mutations(await glide.query(ALL_PROJECTS_TABLE), touched)
+                if missing:
+                    warnings.append(f"Not found in All projects, so Browser Visibility was not set: {', '.join(missing)}")
+                if processes or visibility:
+                    await glide.mutate(processes + visibility)
+                process_rows = len(processes)
+            except httpx.HTTPError as e:
+                logger.exception("po-assemblies process rows / project visibility failed")
+                warnings.append(f"The assemblies were created, but adding their processes or showing the project failed: {e}")
+
         email_sent = False
         if mailer.enabled and done and not failure:
             try:
@@ -1315,6 +1395,7 @@ async def submit_po_assemblies(
         "removals": sum(1 for u in done if u.get("removal")),
         "drawingsCreated": sum(1 for j in jobs if not j["existingRowId"]),
         "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),
+        "processRows": process_rows,
         "emailSent": email_sent,
         "warnings": warnings,
     }

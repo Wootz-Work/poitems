@@ -104,8 +104,9 @@ DEFAULT_PROCESSES = (
     ("Packaging", "Final"),
 )
 
-# All projects table: "Name" holds the project name
-PROJECT_NAME = "Name"
+# All projects table: the project name is "<Company> <Sequence>", e.g. "Unnati" + 185 -> "Unnati 185"
+PROJECT_COMPANY = "Name"
+PROJECT_SEQUENCE = "Wwcz7"
 PROJECT_BROWSER_VISIBILITY = "LVpai"
 
 # Users table
@@ -972,14 +973,27 @@ def process_mutations(units, added_by, added_at):
     return mutations
 
 
+def project_key(name):
+    """Project names compared ignoring case and repeated spaces."""
+    return " ".join(_text(name).lower().split())
+
+
+def project_row_name(row):
+    """An All projects row's project name: Company and Sequence, e.g. "Unnati 185"."""
+    sequence = row.get(PROJECT_SEQUENCE)
+    if isinstance(sequence, float) and sequence.is_integer():
+        sequence = int(sequence)
+    return f"{_text(row.get(PROJECT_COMPANY))} {_text(sequence)}".strip()
+
+
 def project_visibility_mutations(project_rows, projects):
     """Turns Browser Visibility on for each project; returns (mutations, names not found)."""
     by_name = {}
     for row in project_rows:
-        by_name.setdefault(_text(row.get(PROJECT_NAME)).lower(), row)
+        by_name.setdefault(project_key(project_row_name(row)), row)
     mutations, missing = [], []
     for project in projects:
-        row = by_name.get(_text(project).lower())
+        row = by_name.get(project_key(project))
         if row is None:
             missing.append(project)
         elif row.get(PROJECT_BROWSER_VISIBILITY) is not True:

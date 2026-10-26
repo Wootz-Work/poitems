@@ -34,8 +34,8 @@ class FakeGlide:
             pa.DRAWINGS_TABLE: [],
             pa.PROCESS_ASSEMBLY_TABLE: [],
             pa.ALL_PROJECTS_TABLE: [
-                {"$rowID": "prj-a", pa.PROJECT_NAME: "Proj A", pa.PROJECT_BROWSER_VISIBILITY: False},
-                {"$rowID": "prj-b", pa.PROJECT_NAME: "Proj B"},
+                {"$rowID": "prj-a", pa.PROJECT_COMPANY: "Proj", pa.PROJECT_SEQUENCE: "A", pa.PROJECT_BROWSER_VISIBILITY: False},
+                {"$rowID": "prj-b", pa.PROJECT_COMPANY: "Proj", pa.PROJECT_SEQUENCE: "B"},
             ],
             pa.USERS_TABLE: [
                 {"$rowID": "u1", pa.USER_EMAIL: "boss@x.com", pa.USER_ROLE: "Admin", pa.USER_NAME: "Boss"},
@@ -636,3 +636,15 @@ def test_edits_alone_add_no_processes_and_unknown_projects_warn():
     assert res.json()["processRows"] == 0
     assert glide.tables[pa.PROCESS_ASSEMBLY_TABLE] == []
     assert any("Proj A" in w for w in res.json()["warnings"])
+
+
+def test_project_name_is_company_and_sequence():
+    rows = [
+        {"$rowID": "u185", pa.PROJECT_COMPANY: "Unnati", pa.PROJECT_SEQUENCE: 185.0},
+        {"$rowID": "u186", pa.PROJECT_COMPANY: "Unnati", pa.PROJECT_SEQUENCE: 186, pa.PROJECT_BROWSER_VISIBILITY: True},
+        {"$rowID": "e6", pa.PROJECT_COMPANY: "Ekta ", pa.PROJECT_SEQUENCE: "6"},
+    ]
+    assert pa.project_row_name(rows[0]) == "Unnati 185"
+    mutations, missing = pa.project_visibility_mutations(rows, ["unnati 185", "Unnati 186", "Ekta  6", "Nova 1"])
+    assert [m["rowID"] for m in mutations] == ["u185", "e6"]  # 186 is already visible
+    assert missing == ["Nova 1"]

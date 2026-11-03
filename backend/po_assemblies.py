@@ -1189,6 +1189,26 @@ def get_downloader():
 _attachment_ids = {}
 
 
+@router.get("/{po_row_id}/documents")
+async def get_po_documents(po_row_id: str, glide: GlideClient = Depends(get_glide)):
+    """Just the PO's attachments and email body, for the standalone viewer (reads only the PO table)."""
+    try:
+        po = await _load_po(glide, po_row_id)
+    except httpx.HTTPError as e:
+        return _error(502, f"Could not load from Glide: {e}")
+    if po is None:
+        return _error(404, "Purchase order not found")
+    ids = parse_attachment_ids(po.get(PO_ATTACHMENT_IDS))
+    _attachment_ids[po_row_id] = (time.monotonic(), ids)
+    return {
+        "rowId": po_row_id,
+        "poNumber": _text(po.get(PO_NUMBER)),
+        "customer": _text(po.get(PO_CUSTOMER)),
+        "attachmentIds": ids,
+        "emailBody": _text(po.get(PO_BODY)),
+    }
+
+
 @router.get("/{po_row_id}/attachments/{index}")
 async def get_attachment(
     po_row_id: str, index: int, glide: GlideClient = Depends(get_glide), downloader=Depends(get_downloader)

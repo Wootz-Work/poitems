@@ -446,6 +446,19 @@ def test_attachment_proxy_serves_only_the_pos_files():
     assert client.get("/po-assemblies/nope/attachments/0").status_code == 404
 
 
+def test_documents_returns_only_the_pos_attachments_and_email():
+    pa._attachment_ids.clear()
+    glide = FakeGlide(sample_items())
+    glide.tables[pa.PO_TABLE][0][pa.PO_ATTACHMENT_IDS] = "1AbCdEfGhIjK, 2LmNoPqRsTuV"
+    glide.tables[pa.PO_TABLE][0][pa.PO_BODY] = "Please find the PO attached"
+    client = attachment_client(glide, FakeDownloader())
+    body = client.get(f"/po-assemblies/{PO}/documents").json()
+    assert body["attachmentIds"] == ["1AbCdEfGhIjK", "2LmNoPqRsTuV"]
+    assert body["emailBody"] == "Please find the PO attached"
+    assert "rows" not in body
+    assert client.get("/po-assemblies/nope/documents").status_code == 404
+
+
 def test_status_and_dates_are_saved_and_copied_to_assemblies():
     items = [
         line_item("x", partNumber="S-1", partName="Shaft", quantity=2, project="Proj A",

@@ -1189,24 +1189,23 @@ def get_downloader():
 _attachment_ids = {}
 
 
-@router.get("/{po_row_id}/documents")
-async def get_po_documents(po_row_id: str, glide: GlideClient = Depends(get_glide)):
-    """Just the PO's attachments and email body, for the standalone viewer (reads only the PO table)."""
+async def _serve_drive_file(file_id, downloader, what):
     try:
-        po = await _load_po(glide, po_row_id)
-    except httpx.HTTPError as e:
-        return _error(502, f"Could not load from Glide: {e}")
-    if po is None:
-        return _error(404, "Purchase order not found")
-    ids = parse_attachment_ids(po.get(PO_ATTACHMENT_IDS))
-    _attachment_ids[po_row_id] = (time.monotonic(), ids)
-    return {
-        "rowId": po_row_id,
-        "poNumber": _text(po.get(PO_NUMBER)),
-        "customer": _text(po.get(PO_CUSTOMER)),
-        "attachmentIds": ids,
-        "emailBody": _text(po.get(PO_BODY)),
-    }
+        data, content_type = await downloader.download(file_id)
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning("%s failed: %s", what, e)
+        return _error(502, f"Could not download the attachment: {e}")
+    return Response(
+        content=data, media_type=sniff_content_type(data, content_type), headers={"Cache-Control": "private, max-age=600"}
+    )
+
+
+@router.get("/files/{file_id}")
+async def get_drive_file(file_id: str, downloader=Depends(get_downloader)):
+    """A Drive file by its id, for the standalone viewer (po-attachments.html?ids=...)."""
+    if not DRIVE_FILE_ID.match(file_id):
+        return _error(404, "Attachment not found")
+    return await _serve_drive_file(file_id, downloader, f"file {file_id}")
 
 
 @router.get("/{po_row_id}/attachments/{index}")
@@ -1228,14 +1227,7 @@ async def get_attachment(
         _attachment_ids[po_row_id] = (time.monotonic(), ids)
     if not 0 <= index < len(ids) or not DRIVE_FILE_ID.match(ids[index]):
         return _error(404, "Attachment not found")
-    try:
-        data, content_type = await downloader.download(ids[index])
-    except (httpx.HTTPError, ValueError) as e:
-        logger.warning("attachment %s of %s failed: %s", index, po_row_id, e)
-        return _error(502, f"Could not download the attachment: {e}")
-    return Response(
-        content=data, media_type=sniff_content_type(data, content_type), headers={"Cache-Control": "private, max-age=600"}
-    )
+    return await _serve_drive_file(ids[index], downloader, f"attachment {index} of {po_row_id}")
 
 
 @router.post("/{po_row_id}/save")

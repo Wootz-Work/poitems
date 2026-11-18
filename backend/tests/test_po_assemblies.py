@@ -192,7 +192,8 @@ def test_submit_creates_assemblies_and_child_parts():
     assert res.json() == {
         "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
         "quantityUpdates": 0, "detailUpdates": 0, "removals": 0,
-        "drawingsCreated": 4, "drawingsUpdated": 0, "processRows": 6, "emailSent": False, "warnings": [],
+        "drawingsCreated": 4, "drawingsUpdated": 0, "processRows": 6, "emailSent": False, "projectLeadEmails": 0,
+        "warnings": ["No project lead on the PO for Proj A, so none was set"],
     }
 
     assemblies = glide.tables[pa.ASSEMBLIES_TABLE]
@@ -446,17 +447,13 @@ def test_attachment_proxy_serves_only_the_pos_files():
     assert client.get("/po-assemblies/nope/attachments/0").status_code == 404
 
 
-def test_documents_returns_only_the_pos_attachments_and_email():
-    pa._attachment_ids.clear()
-    glide = FakeGlide(sample_items())
-    glide.tables[pa.PO_TABLE][0][pa.PO_ATTACHMENT_IDS] = "1AbCdEfGhIjK, 2LmNoPqRsTuV"
-    glide.tables[pa.PO_TABLE][0][pa.PO_BODY] = "Please find the PO attached"
-    client = attachment_client(glide, FakeDownloader())
-    body = client.get(f"/po-assemblies/{PO}/documents").json()
-    assert body["attachmentIds"] == ["1AbCdEfGhIjK", "2LmNoPqRsTuV"]
-    assert body["emailBody"] == "Please find the PO attached"
-    assert "rows" not in body
-    assert client.get("/po-assemblies/nope/documents").status_code == 404
+def test_drive_file_is_served_by_id():
+    downloader = FakeDownloader()
+    client = attachment_client(FakeGlide(sample_items()), downloader)
+    res = client.get("/po-assemblies/files/1AbCdEfGhIjK")
+    assert res.status_code == 200 and res.headers["content-type"] == "application/pdf"
+    assert downloader.calls == ["1AbCdEfGhIjK"]
+    assert client.get("/po-assemblies/files/bad.id").status_code == 404
 
 
 def test_status_and_dates_are_saved_and_copied_to_assemblies():
@@ -661,3 +658,69 @@ def test_project_name_is_company_and_sequence():
     mutations, missing = pa.project_visibility_mutations(rows, ["unnati 185", "Unnati 186", "Ekta  6", "Nova 1"])
     assert [m["rowID"] for m in mutations] == ["u185", "e6"]  # 186 is already visible
     assert missing == ["Nova 1"]
+
+
+LEADS = json.dumps({
+    "proj a": {"admin": "Ayush Singh", "email": "ayush@x.com"},
+    "Proj B": {"admin": "Himanshu Uniyal", "email": "himanshu@x.com"},
+})
+
+
+def test_project_lead_is_set_on_new_and_updated_assemblies():
+    items = submittable_items() + [line_item("k", partNumber="K-2", partName="Kit part 2", quantity=4,
+                                             partOfGroup=True, groupName="Kit", project="Proj A")]
+    glide = with_existing(FakeGlide(items))
+    glide.tables[pa.PO_TABLE][0][pa.PO_PROJECT_LEADS] = LEADS
+    glide.tables[pa.PO_TABLE][0][pa.PO_SHIPMENT_MODE] = "Air"
+    res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
+        {"key": "a:asm-e1", "quantity": 7},
+        {"key": "a:asm-old-missing", "quantity": 1},
+    ]})
+    assert res.status_code == 200, res.text
+    asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    lead = pa.ASM["projectLead"]
+    new = [a for a in asm.values() if a["$rowID"].startswith("new-")]
+    assert new and all(a[lead] == "ayush@x.com" for a in new)
+    assert asm["asm-e1"][lead] == "ayush@x.com"  # updated
+    assert asm["asm-kit"][lead] == "ayush@x.com"  # existing group that got a new child
+    assert lead not in asm["asm-other"]  # untouched
+    mode = pa.ASM["shipmentMode"]
+    assert all(a[mode] == "Air" for a in new) and asm["asm-e1"][mode] == "Air" and asm["asm-kit"][mode] == "Air"
+    assert mode not in asm["asm-other"]
+
+
+def test_removed_assembly_does_not_get_a_lead():
+    glide = with_existing(FakeGlide([]))
+    glide.tables[pa.PO_TABLE][0][pa.PO_PROJECT_LEADS] = LEADS
+    mailer = FakeMailer(enabled=True)
+    res = client_for(glide, mailer=mailer).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [{"key": "a:asm-e1", "remove": True}]})
+    assert res.status_code == 200, res.text
+    assert pa.ASM["projectLead"] not in {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}["asm-e1"]
+    assert res.json()["projectLeadEmails"] == 0 and res.json()["warnings"] == []
+
+
+def test_one_email_per_project_lead_lists_their_assemblies():
+    items = submittable_items() + [line_item("z", partNumber="Q-9", partName="Plate", quantity=1, project="Proj B")]
+    glide = FakeGlide(items)
+    glide.tables[pa.PO_TABLE][0][pa.PO_PROJECT_LEADS] = LEADS
+    mailer = FakeMailer(enabled=True)
+    res = client_for(glide, mailer=mailer).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com"})
+    assert res.json()["projectLeadEmails"] == 2
+    lead_mails = {to[0]: (cc, subject, body) for to, cc, subject, body in mailer.sent[1:]}
+    cc, subject, body = lead_mails["ayush@x.com"]
+    assert cc == [] and subject == "You're the project lead for Proj A"
+    assert body == (
+        "Hi Ayush,\n\nYou have been assigned as the project lead for Proj A.\n\n"
+        "Assemblies in Proj A:\n- P-100 – Frame (qty 2)\n- Fasteners (group of 2 parts)\n\n"
+        "Published to manufacturing by Ayush Singh.\n"
+    )
+    assert "- Q-9 – Plate (qty 1)" in lead_mails["himanshu@x.com"][2]
+
+
+def test_projects_without_a_lead_are_reported():
+    mailer = FakeMailer(enabled=True)
+    res = client_for(FakeGlide(submittable_items()), mailer=mailer).post(f"/po-assemblies/{PO}/submit")
+    assert res.json()["projectLeadEmails"] == 0
+    assert res.json()["warnings"] == ["No project lead on the PO for Proj A, so none was set"]
+    assert pa.parse_project_leads("not json") == {}
+    assert pa.parse_project_leads({"X 1": {"admin": "A"}}) == {}

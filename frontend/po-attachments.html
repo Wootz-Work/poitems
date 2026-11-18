@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>PO attachments</title>
+    <title>Attachments</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <style>
         :root {
@@ -53,7 +53,6 @@
 
         /* The whole page is the viewer: tabs on top, the document below */
         .doc { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--panel); }
-        .po-title { padding: 0 8px 0 4px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%; }
 
         /* ---------- Document viewer ---------- */
         .doc-tabs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px; border-bottom: 1px solid var(--line); }
@@ -91,12 +90,12 @@
     </section>
 
     <script>
-        // Just the PO's attachments and email, for embedding on its own: ?po=<PO row ID>
+        // Google Drive attachments, for embedding on their own: ?ids=<file id>,<file id>,...
         const params = new URLSearchParams(location.search);
-        const PO_ROW_ID = params.get("po") || params.get("poRowID") || params.get("rowID");
+        const FILE_IDS = (params.get("ids") || "").split(",").map((id) => id.trim()).filter(Boolean);
         // The PO Assemblies Render service (backend/po_app.py); ?api= overrides it for testing
         const API_BASE = (params.get("api") || "https://po-assemblies.onrender.com").replace(/\/$/, "");
-        const API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}`;
+        const API = `${API_BASE}/po-assemblies/files`;
 
         const $ = (id) => document.getElementById(id);
 
@@ -133,83 +132,25 @@
 
         // ---------- Documents ----------
 
-        function renderDocs(po) {
-            const tabs = [];
-            po.attachmentIds.forEach((id, i) => tabs.push({
-                label: po.attachmentIds.length === 1 ? "Attachment" : `Attachment ${i + 1}`,
-                index: i,
+        function renderDocs(ids) {
+            const tabs = ids.map((id, i) => ({
+                label: ids.length === 1 ? "Attachment" : `Attachment ${i + 1}`,
+                id,
                 preview: `https://drive.google.com/file/d/${encodeURIComponent(id)}/preview`,
                 open: `https://drive.google.com/file/d/${encodeURIComponent(id)}/view`,
             }));
-            if (po.emailBody) tabs.push({ label: "Email", email: po.emailBody });
-
-            const viewer = $("viewer");
             const bar = $("doc-tabs");
-            const label = [po.poNumber && (/^po\b/i.test(po.poNumber) ? po.poNumber : `PO ${po.poNumber}`), po.customer].filter(Boolean).join(" · ");
-            const title = label ? h("span", { class: "po-title", title: label }, label) : "";
-            if (label) document.title = `${label} – attachments`;
-            if (!tabs.length) {
-                bar.replaceChildren(title, h("span", { class: "tab active" }, "No attachments"));
-                viewer.replaceChildren(h("div", { class: "empty" }, "This PO has no attachments or email body."));
-                return;
-            }
-            let fullEmail = false;
             const show = (index) => {
                 const tab = tabs[index];
                 const tools = h("span", { class: "doc-tools" });
                 bar.replaceChildren(
-                    title,
                     ...tabs.map((t, i) => h("button", { class: `tab${i === index ? " active" : ""}`, onclick: () => show(i) }, t.label)),
                     tools,
-                    tab.open ? h("a", { class: "doc-open", href: tab.open, target: "_blank", rel: "noopener" }, "Open", icon("external", 13)) : "",
+                    h("a", { class: "doc-open", href: tab.open, target: "_blank", rel: "noopener" }, "Open", icon("external", 13)),
                 );
-                if (tab.email != null) {
-                    tools.append(h("button", { onclick: () => { fullEmail = !fullEmail; show(index); } }, fullEmail ? "Hide headers" : "Show full email"));
-                    // Sandboxed with no scripts: the email is shown, never run
-                    viewer.replaceChildren(h("iframe", {
-                        sandbox: "allow-popups allow-popups-to-escape-sandbox", title: "Email",
-                        srcdoc: emailDocument(tab.email, !fullEmail),
-                    }));
-                } else {
-                    showAttachment(tab, tools);
-                }
+                showAttachment(tab, tools);
             };
             show(0);
-        }
-
-        // ---------- Email ----------
-
-        const HEADER_LINE = /^\s*(-{2,}\s*(forwarded|original) message\s*-{2,}|(from|sent|date|to|cc|bcc|subject|reply-to)\s*:)/i;
-
-        function isHeaderBlock(text) {
-            const labels = text.match(/\b(from|sent|date|to|cc|bcc|subject)\s*:/gi) || [];
-            return HEADER_LINE.test(text) && labels.length >= 2 && text.length < 1200;
-        }
-
-        function emailDocument(raw, hideHeaders) {
-            const isHtml = /<(html|body|div|p|br|table|span|font|b|strong|ul|ol|li)\b[^>]*>/i.test(raw);
-            let content;
-            if (isHtml) {
-                const doc = new DOMParser().parseFromString(raw, "text/html");
-                doc.querySelectorAll("script, style, link, meta, title, base").forEach((el) => el.remove());
-                if (hideHeaders) {
-                    // Forwarded/reply header blocks (Gmail's "---- Forwarded message ----", Outlook's From/Sent/To)
-                    for (const el of doc.body.querySelectorAll("div, p, td, blockquote, span")) {
-                        if (el.isConnected && isHeaderBlock(el.textContent.trim())) el.remove();
-                    }
-                }
-                content = doc.body.innerHTML;
-            } else {
-                let lines = raw.replace(/\r\n?/g, "\n").split("\n");
-                if (hideHeaders) lines = lines.filter((line) => !HEADER_LINE.test(line));
-                const text = lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-                content = `<div style="white-space:pre-wrap">${text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</div>`;
-            }
-            return `<!doctype html><meta charset="utf-8"><base target="_blank"><style>
-                body{margin:20px;font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#1f1f23;background:#fff;word-wrap:break-word}
-                table{border-collapse:collapse;max-width:100%}td,th{padding:2px 6px;vertical-align:top}
-                img{max-width:100%;height:auto}blockquote{margin:8px 0;padding-left:12px;border-left:2px solid #ddd;color:#555}
-                p{margin:0 0 10px}</style><body>${content}</body>`;
         }
 
         // ---------- Attachments: rendered here so they can be zoomed and copied from ----------
@@ -217,12 +158,12 @@
         if (window.pdfjsLib) {
             pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
         }
-        const attachmentCache = new Map(); // index -> Promise<{ type, pdf?, url? }>
+        const attachmentCache = new Map(); // file id -> Promise<{ type, pdf?, url? }>
 
-        function loadAttachment(index) {
-            if (!attachmentCache.has(index)) {
-                attachmentCache.set(index, (async () => {
-                    const res = await fetch(`${API}/attachments/${index}`);
+        function loadAttachment(id) {
+            if (!attachmentCache.has(id)) {
+                attachmentCache.set(id, (async () => {
+                    const res = await fetch(`${API}/${encodeURIComponent(id)}`);
                     if (!res.ok) {
                         const body = await res.json().catch(() => ({}));
                         throw new Error(body.error || `HTTP ${res.status}`);
@@ -236,9 +177,9 @@
                     if (type.startsWith("image/")) return { type: "image", url: URL.createObjectURL(new Blob([data], { type })) };
                     throw new Error(`Can't show ${type || "this file"} here`);
                 })());
-                attachmentCache.get(index).catch(() => attachmentCache.delete(index));
+                attachmentCache.get(id).catch(() => attachmentCache.delete(id));
             }
-            return attachmentCache.get(index);
+            return attachmentCache.get(id);
         }
 
         // Drive often labels files application/octet-stream, so look at the file's own first bytes
@@ -260,7 +201,7 @@
             viewer.replaceChildren(h("div", { class: "empty" }, "Loading attachment…"));
             let file;
             try {
-                file = await loadAttachment(tab.index);
+                file = await loadAttachment(tab.id);
             } catch (err) {
                 if (token !== viewToken) return;
                 // Fall back to Google's own viewer (no zoom or copy from here)
@@ -376,21 +317,8 @@
 
         // ---------- Loading ----------
 
-        (async function init() {
-            if (!PO_ROW_ID) {
-                $("viewer").replaceChildren(h("div", { class: "empty" }, "No PO selected (the link must include ?po=<PO row ID>)."));
-                return;
-            }
-            try {
-                const res = await fetch(`${API}/documents`);
-                const body = await res.json().catch(() => ({}));
-                if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
-                renderDocs(body);
-            } catch (err) {
-                console.error(err);
-                $("viewer").replaceChildren(h("div", { class: "empty" }, `Could not load the PO: ${err.message}. Reload the page to try again.`));
-            }
-        })();
+        if (FILE_IDS.length) renderDocs(FILE_IDS);
+        else $("viewer").replaceChildren(h("div", { class: "empty" }, "No attachments (the link must include ?ids=<Drive file id>,<Drive file id>)."));
     </script>
 </body>
 

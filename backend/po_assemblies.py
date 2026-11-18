@@ -75,7 +75,8 @@ PO_APPROVED_AT = "Kygc4"
 PO_ATTACHMENT_IDS = "XOAZw"  # Google Drive file ids, comma separated
 PO_BODY = "Name"  # the PO email's body
 # {"<project>": {"admin": "<name>", "email": "<email>"}}, as JSON
-PO_PROJECT_LEADS = "TODO_PO_PROJECT_LEAD"
+PO_PROJECT_LEADS = "TFg6C"
+PO_SHIPMENT_MODE = "kRvWx"
 
 # Drawings table
 DWG = {
@@ -132,7 +133,8 @@ ASM = {
     "mfgStartDate": "6JmvW",
     "dispatchDate": "QNggY",
     "internalPoc": "HqYCY",
-    "projectLead": "TODO_ASM_PROJECT_LEAD",
+    "projectLead": "EFeaI",
+    "shipmentMode": "7T9Ob",
 }
 
 # Child Parts table
@@ -735,7 +737,7 @@ def existing_mutations(item, quantity=None, part_name=None, remove=False, detail
 EMPTY_EXISTING = {"items": [], "groups": []}
 
 
-def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc="", leads=None):
+def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc="", leads=None, shipment_mode=""):
     """
     Turns the PO's line items into Glide work.
 
@@ -752,19 +754,28 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     page's edits to existing assemblies: [{"key", "quantity"?, "partName"?, "remove"?,
     "currentStatus"?, "mfgStartDate"?, "dispatchDate"?}]. `poc` (the publisher's email) becomes
     the Internal POC of every assembly created. `leads` (parse_project_leads) sets the Project
-    lead of every assembly created or updated, by project.
+    lead of every assembly created or updated, by project, and `shipment_mode` (the PO's) their
+    Shipment mode.
     """
     leads = leads or {}
 
     def lead_email(project):
         return (leads.get(project_key(project)) or {}).get("email", "")
 
-    def set_lead(row_id, project):
-        email = lead_email(project)
-        if not email or not row_id:
+    def po_fields(project):
+        """Columns every assembly created or updated by this PO takes from it."""
+        values = {}
+        if lead_email(project):
+            values[ASM["projectLead"]] = lead_email(project)
+        if shipment_mode:
+            values[ASM["shipmentMode"]] = shipment_mode
+        return values
+
+    def set_po_fields(row_id, project):
+        values = po_fields(project)
+        if not values or not row_id:
             return []
-        return [{"kind": "set-columns-in-row", "tableName": ASSEMBLIES_TABLE, "rowID": row_id,
-                 "columnValues": {ASM["projectLead"]: email}}]
+        return [{"kind": "set-columns-in-row", "tableName": ASSEMBLIES_TABLE, "rowID": row_id, "columnValues": values}]
 
     existing_by_key = {i["key"]: i for i in existing["items"]}
     existing_by_key.update({g["key"]: g for g in existing["groups"] if "key" in g})
@@ -869,8 +880,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             values[ASM["quantity"]] = quantity
         if poc:
             values[ASM["internalPoc"]] = poc
-        if lead_email(project):
-            values[ASM["projectLead"]] = lead_email(project)
+        values.update(po_fields(project))
         if source:
             values[ASM["extractedRowId"]] = source["rowId"]
             if source["category"]:
@@ -904,11 +914,12 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove, details=details)
         if mutations and not remove:
             # The assembly (or a child's group) is part of this publish, so it gets the project's lead
+            # and the PO's shipment mode
             if item["kind"] == "child":
                 group = existing_by_key.get(item.get("groupKey"))
-                mutations += set_lead(group and group["rowId"], item["project"])
+                mutations += set_po_fields(group and group["rowId"], item["project"])
             else:
-                mutations += set_lead(item["rowId"], item["project"])
+                mutations += set_po_fields(item["rowId"], item["project"])
         if mutations:
             units.append({
                 "kind": "edit",
@@ -950,7 +961,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         if target:
             # The group already exists in this project: its members become more of its children
             part_number, part_name = target["partNumber"], target["name"]
-            mutations, first_item = set_lead(target["rowId"], project), target["childCount"] + 1
+            mutations, first_item = set_po_fields(target["rowId"], project), target["childCount"] + 1
         else:
             # The group's assembly number and name are both the name shown on the page
             part_number = part_name = name
@@ -1417,7 +1428,8 @@ async def submit_po_assemblies(
 
         leads = parse_project_leads(po.get(PO_PROJECT_LEADS))
         units, errors = build_submit_plan(
-            items, parse_projects(po.get(PO_PROJECTS)), existing, changes, poc=submitted_by, leads=leads
+            items, parse_projects(po.get(PO_PROJECTS)), existing, changes, poc=submitted_by, leads=leads,
+            shipment_mode=_text(po.get(PO_SHIPMENT_MODE)),
         )
         if errors:
             return _error(400, "Fix the highlighted rows before submitting", rowErrors=errors)

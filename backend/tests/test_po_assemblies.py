@@ -671,6 +671,7 @@ def test_project_lead_is_set_on_new_and_updated_assemblies():
                                              partOfGroup=True, groupName="Kit", project="Proj A")]
     glide = with_existing(FakeGlide(items))
     glide.tables[pa.PO_TABLE][0][pa.PO_PROJECT_LEADS] = LEADS
+    glide.tables[pa.PO_TABLE][0][pa.PO_SHIPMENT_MODE] = "Air"
     res = client_for(glide).post(f"/po-assemblies/{PO}/submit", json={"existingChanges": [
         {"key": "a:asm-e1", "quantity": 7},
         {"key": "a:asm-old-missing", "quantity": 1},
@@ -683,6 +684,9 @@ def test_project_lead_is_set_on_new_and_updated_assemblies():
     assert asm["asm-e1"][lead] == "ayush@x.com"  # updated
     assert asm["asm-kit"][lead] == "ayush@x.com"  # existing group that got a new child
     assert lead not in asm["asm-other"]  # untouched
+    mode = pa.ASM["shipmentMode"]
+    assert all(a[mode] == "Air" for a in new) and asm["asm-e1"][mode] == "Air" and asm["asm-kit"][mode] == "Air"
+    assert mode not in asm["asm-other"]
 
 
 def test_removed_assembly_does_not_get_a_lead():

@@ -16,6 +16,7 @@ working copy and nothing is lost when the page is closed before submitting.
 """
 import asyncio
 import io
+import json
 import logging
 import os
 import re
@@ -73,6 +74,8 @@ PO_APPROVED_BY = "zuGSm"
 PO_APPROVED_AT = "Kygc4"
 PO_ATTACHMENT_IDS = "XOAZw"  # Google Drive file ids, comma separated
 PO_BODY = "Name"  # the PO email's body
+# {"<project>": {"admin": "<name>", "email": "<email>"}}, as JSON
+PO_PROJECT_LEADS = "TODO_PO_PROJECT_LEAD"
 
 # Drawings table
 DWG = {
@@ -129,6 +132,7 @@ ASM = {
     "mfgStartDate": "6JmvW",
     "dispatchDate": "QNggY",
     "internalPoc": "HqYCY",
+    "projectLead": "TODO_ASM_PROJECT_LEAD",
 }
 
 # Child Parts table
@@ -417,6 +421,62 @@ def submitted_email(po, submitted_by_name, units):
     return subject, body
 
 
+def parse_project_leads(value):
+    """The PO's project leads column -> {project_key: {"name", "email"}}; unreadable entries are skipped."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value) if value.strip() else {}
+        except ValueError:
+            logger.warning("unreadable project leads: %r", value)
+            return {}
+    leads = {}
+    for project, lead in (value or {}).items() if isinstance(value, dict) else ():
+        email = _text(lead.get("email")) if isinstance(lead, dict) else ""
+        if email:
+            leads[project_key(project)] = {"name": _text(lead.get("admin")), "email": email}
+    return leads
+
+
+def project_lead_emails(units, leads, submitted_by_name):
+    """
+    One email per project lead, listing the assemblies of their projects added or updated in this
+    publish. Returns ([(email, subject, body)], [projects with no lead]).
+    """
+    by_lead, missing = {}, []
+    for unit in units:
+        if not unit.get("summary"):
+            continue
+        lead = leads.get(project_key(unit["project"]))
+        if not lead:
+            if unit["project"] not in missing:
+                missing.append(unit["project"])
+            continue
+        entry = by_lead.setdefault(lead["email"].lower(), {"lead": lead, "projects": {}})
+        entry["projects"].setdefault(unit["project"], []).append(unit["summary"])
+
+    emails = []
+    for entry in by_lead.values():
+        lead, projects = entry["lead"], entry["projects"]
+        names = ", ".join(projects)
+        first_name = lead["name"].split()[0] if lead["name"] else "there"
+        sections = []
+        for project, assemblies in projects.items():
+            lines = []
+            for a in assemblies:
+                label = a["partNumber"] if not a["partName"] or a["partName"] == a["partNumber"] else f"{a['partNumber']} – {a['partName']}"
+                lines.append(f"- {label} ({a['note']})")
+            sections.append(f"Assemblies in {project}:\n" + "\n".join(lines))
+        subject = f"You're the project lead for {names}"
+        body = (
+            f"Hi {first_name},\n\n"
+            f"You have been assigned as the project lead for {names}.\n\n"
+            + "\n\n".join(sections)
+            + f"\n\nPublished to manufacturing by {submitted_by_name}.\n"
+        )
+        emails.append((lead["email"], subject, body))
+    return emails, missing
+
+
 # --- Pure helpers ---------------------------------------------------------------
 
 def _text(value):
@@ -675,7 +735,7 @@ def existing_mutations(item, quantity=None, part_name=None, remove=False, detail
 EMPTY_EXISTING = {"items": [], "groups": []}
 
 
-def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=""):
+def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc="", leads=None):
     """
     Turns the PO's line items into Glide work.
 
@@ -691,8 +751,21 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     existing group assembly in its project adds its members to that assembly. `changes` are the
     page's edits to existing assemblies: [{"key", "quantity"?, "partName"?, "remove"?,
     "currentStatus"?, "mfgStartDate"?, "dispatchDate"?}]. `poc` (the publisher's email) becomes
-    the Internal POC of every assembly created.
+    the Internal POC of every assembly created. `leads` (parse_project_leads) sets the Project
+    lead of every assembly created or updated, by project.
     """
+    leads = leads or {}
+
+    def lead_email(project):
+        return (leads.get(project_key(project)) or {}).get("email", "")
+
+    def set_lead(row_id, project):
+        email = lead_email(project)
+        if not email or not row_id:
+            return []
+        return [{"kind": "set-columns-in-row", "tableName": ASSEMBLIES_TABLE, "rowID": row_id,
+                 "columnValues": {ASM["projectLead"]: email}}]
+
     existing_by_key = {i["key"]: i for i in existing["items"]}
     existing_by_key.update({g["key"]: g for g in existing["groups"] if "key" in g})
     existing_groups = {}
@@ -796,6 +869,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             values[ASM["quantity"]] = quantity
         if poc:
             values[ASM["internalPoc"]] = poc
+        if lead_email(project):
+            values[ASM["projectLead"]] = lead_email(project)
         if source:
             values[ASM["extractedRowId"]] = source["rowId"]
             if source["category"]:
@@ -827,6 +902,13 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
 
     for item, quantity, part_name, remove, details in edits:
         mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove, details=details)
+        if mutations and not remove:
+            # The assembly (or a child's group) is part of this publish, so it gets the project's lead
+            if item["kind"] == "child":
+                group = existing_by_key.get(item.get("groupKey"))
+                mutations += set_lead(group and group["rowId"], item["project"])
+            else:
+                mutations += set_lead(item["rowId"], item["project"])
         if mutations:
             units.append({
                 "kind": "edit",
@@ -838,6 +920,11 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 "detailsUpdate": not remove and any(details.get(k) and details[k] != item.get(k) for k in DETAIL_COLUMNS),
                 "mutations": mutations,
                 "drawings": [],
+                "summary": None if remove else {
+                    "partNumber": item["partNumber"],
+                    "partName": _text(part_name) or item["partName"],
+                    "note": f"qty {format_quantity(quantity if quantity is not None else item['quantity'])}, updated",
+                },
             })
 
     for item in standalone:
@@ -851,6 +938,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 mark_submitted(item["rowId"], item["project"]),
             ],
             "drawings": [drawing(item["project"], item["partNumber"], item["partName"], item["quantity"], item)],
+            "summary": {"partNumber": item["partNumber"], "partName": item["partName"],
+                        "note": f"qty {format_quantity(item['quantity'])}"},
         })
 
     for key, members in groups.items():
@@ -861,7 +950,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
         if target:
             # The group already exists in this project: its members become more of its children
             part_number, part_name = target["partNumber"], target["name"]
-            mutations, first_item = [], target["childCount"] + 1
+            mutations, first_item = set_lead(target["rowId"], project), target["childCount"] + 1
         else:
             # The group's assembly number and name are both the name shown on the page
             part_number = part_name = name
@@ -904,6 +993,11 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             # The group's own drawing (new groups only), then one per child, all linked to the group's assembly row
             "drawings": child_drawings if target else [drawing(project, part_number, part_name, 1, members[0])] + child_drawings,
             "fixedAssemblyRowId": target["rowId"] if target else None,
+            "summary": {
+                "partNumber": part_number, "partName": part_name,
+                "note": f"{len(members)} part{'' if len(members) == 1 else 's'} added" if target
+                else f"group of {len(members)} part{'' if len(members) == 1 else 's'}",
+            },
         })
 
     return units, []
@@ -1321,7 +1415,10 @@ async def submit_po_assemblies(
             logger.exception("po-assemblies submit load failed")
             return _error(502, f"Could not load from Glide: {e}")
 
-        units, errors = build_submit_plan(items, parse_projects(po.get(PO_PROJECTS)), existing, changes, poc=submitted_by)
+        leads = parse_project_leads(po.get(PO_PROJECT_LEADS))
+        units, errors = build_submit_plan(
+            items, parse_projects(po.get(PO_PROJECTS)), existing, changes, poc=submitted_by, leads=leads
+        )
         if errors:
             return _error(400, "Fix the highlighted rows before submitting", rowErrors=errors)
         if not units:
@@ -1397,19 +1494,33 @@ async def submit_po_assemblies(
                 logger.exception("po-assemblies process rows / project visibility failed")
                 warnings.append(f"The assemblies were created, but adding their processes or showing the project failed: {e}")
 
-        email_sent = False
-        if mailer.enabled and done and not failure:
-            try:
-                users = await glide.query(USERS_TABLE)
-                to = admin_emails(users, mailer.admin_role)
-                cc = [submitted_by] if submitted_by and submitted_by not in to else []
-                if to or cc:
-                    subject, text = submitted_email(po, user_name(users, submitted_by), done)
-                    await mailer.send(to or cc, cc if to else [], subject, text)
-                    email_sent = True
-            except Exception as e:
-                logger.exception("po-assemblies email failed")
-                warnings.append(f"The notification email could not be sent: {e}")
+        email_sent, lead_emails_sent = False, 0
+        if done and not failure:
+            users = []
+            if mailer.enabled:
+                try:
+                    users = await glide.query(USERS_TABLE)
+                    to = admin_emails(users, mailer.admin_role)
+                    cc = [submitted_by] if submitted_by and submitted_by not in to else []
+                    if to or cc:
+                        subject, text = submitted_email(po, user_name(users, submitted_by), done)
+                        await mailer.send(to or cc, cc if to else [], subject, text)
+                        email_sent = True
+                except Exception as e:
+                    logger.exception("po-assemblies email failed")
+                    warnings.append(f"The notification email could not be sent: {e}")
+
+            # One email to each project lead, listing their project's assemblies
+            lead_mails, no_lead = project_lead_emails(done, leads, user_name(users, submitted_by))
+            if no_lead:
+                warnings.append(f"No project lead on the PO for {', '.join(no_lead)}, so none was set")
+            for lead, subject, text in lead_mails if mailer.enabled else ():
+                try:
+                    await mailer.send([lead], [], subject, text)
+                    lead_emails_sent += 1
+                except Exception as e:
+                    logger.exception("po-assemblies project lead email failed")
+                    warnings.append(f"The project lead email to {lead} could not be sent: {e}")
 
     jobs = [job for unit in done for job in unit["drawingJobs"]] if drawings_ok else []
     summary = {
@@ -1423,6 +1534,7 @@ async def submit_po_assemblies(
         "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),
         "processRows": process_rows,
         "emailSent": email_sent,
+        "projectLeadEmails": lead_emails_sent,
         "warnings": warnings,
     }
     if failure:

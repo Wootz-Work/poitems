@@ -1192,6 +1192,7 @@
                 if (body.quantityUpdates) parts.push(`${body.quantityUpdates} quantity update${body.quantityUpdates === 1 ? "" : "s"}`);
                 if (body.detailUpdates) parts.push(`${body.detailUpdates} status/date update${body.detailUpdates === 1 ? "" : "s"}`);
                 if (body.removals) parts.push(`${body.removals} removed`);
+                if (body.projectLeadEmails) parts.push(`${body.projectLeadEmails} project lead${body.projectLeadEmails === 1 ? "" : "s"} emailed`);
                 await load();
                 const warnings = body.warnings || [];
                 toast(`Published: ${parts.join(", ") || "done"}.${warnings.length ? `\n${warnings.join("\n")}` : ""}`, null, null, warnings.length ? "error" : "");

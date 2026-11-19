@@ -1313,6 +1313,18 @@ async def get_drive_file(file_id: str, downloader=Depends(get_downloader)):
     return await _serve_drive_file(file_id, downloader, f"file {file_id}")
 
 
+@router.get("/{po_row_id}/attachment-ids")
+async def get_attachment_ids(po_row_id: str, glide: GlideClient = Depends(get_glide)):
+    """The PO's Drive attachment ids, for the standalone viewer (po-attachments.html?po=...)."""
+    try:
+        po = await _load_po(glide, po_row_id)
+    except httpx.HTTPError as e:
+        return _error(502, f"Could not load from Glide: {e}")
+    if po is None:
+        return _error(404, "Purchase order not found")
+    return {"attachmentIds": parse_attachment_ids(po.get(PO_ATTACHMENT_IDS))}
+
+
 @router.get("/{po_row_id}/attachments/{index}")
 async def get_attachment(
     po_row_id: str, index: int, glide: GlideClient = Depends(get_glide), downloader=Depends(get_downloader)

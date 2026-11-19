@@ -93,9 +93,12 @@
         // Google Drive attachments, for embedding on their own: ?ids=<file id>,<file id>,...
         const params = new URLSearchParams(location.search);
         const FILE_IDS = (params.get("ids") || "").split(",").map((id) => id.trim()).filter(Boolean);
+        // Or a PO, whose attachments (XOAZw) are looked up: ?po=<PO row ID>
+        const PO_ROW_ID = params.get("po") || params.get("poRowID") || params.get("rowID");
         // The PO Assemblies Render service (backend/po_app.py); ?api= overrides it for testing
         const API_BASE = (params.get("api") || "https://po-assemblies.onrender.com").replace(/\/$/, "");
         const API = `${API_BASE}/po-assemblies/files`;
+        const PO_API = `${API_BASE}/po-assemblies/${encodeURIComponent(PO_ROW_ID || "")}/attachment-ids`;
 
         const $ = (id) => document.getElementById(id);
 
@@ -317,8 +320,22 @@
 
         // ---------- Loading ----------
 
-        if (FILE_IDS.length) renderDocs(FILE_IDS);
-        else $("viewer").replaceChildren(h("div", { class: "empty" }, "No attachments (the link must include ?ids=<Drive file id>,<Drive file id>)."));
+        const showEmpty = (text) => $("viewer").replaceChildren(h("div", { class: "empty" }, text));
+
+        (async function init() {
+            if (FILE_IDS.length) return renderDocs(FILE_IDS);
+            if (!PO_ROW_ID) return showEmpty("No attachments (the link must include ?ids=<Drive file id>,... or ?po=<PO row ID>).");
+            try {
+                const res = await fetch(PO_API);
+                const body = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+                if (body.attachmentIds.length) renderDocs(body.attachmentIds);
+                else showEmpty("This PO has no attachments.");
+            } catch (err) {
+                console.error(err);
+                showEmpty(`Could not load the PO's attachments: ${err.message}. Reload the page to try again.`);
+            }
+        })();
     </script>
 </body>
 

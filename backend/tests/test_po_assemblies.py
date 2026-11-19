@@ -456,6 +456,12 @@ def test_drive_file_is_served_by_id():
     assert client.get("/po-assemblies/files/bad.id").status_code == 404
 
 
+def test_attachment_ids_of_a_po():
+    client = attachment_client(FakeGlide(sample_items()), FakeDownloader())
+    assert client.get(f"/po-assemblies/{PO}/attachment-ids").json() == {"attachmentIds": ["g1", "g2"]}
+    assert client.get("/po-assemblies/nope/attachment-ids").status_code == 404
+
+
 def test_status_and_dates_are_saved_and_copied_to_assemblies():
     items = [
         line_item("x", partNumber="S-1", partName="Shaft", quantity=2, project="Proj A",

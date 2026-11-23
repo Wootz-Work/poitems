@@ -656,9 +656,11 @@
             const changed = Object.values(existingEdits).filter((e) => !e.remove && hasChange(e));
             const updates = changed.length;
             const removals = Object.values(existingEdits).filter((e) => e.remove).length;
+            // Added to this PO with + but not changed: still published (they get the project lead)
+            const reused = Object.values(existingEdits).filter((e) => e.inPo && !e.remove && !hasChange(e)).length;
             const missing = rows.reduce((n, r) => n + Object.keys(rowProblems(r)).length, 0) +
                 existing.reduce((n, e) => n + Object.keys(existingProblems(e)).length, 0);
-            return { add: add.length, updates, removals, missing, work: add.length + updates + removals };
+            return { add: add.length, updates, reused, removals, missing, work: add.length + updates + reused + removals };
         }
 
         function refreshChrome() {
@@ -673,6 +675,7 @@
                 const parts = [];
                 if (s.add) parts.push(`${s.add} new`);
                 if (s.updates) parts.push(`${s.updates} update${s.updates === 1 ? "" : "s"}`);
+                if (s.reused) parts.push(`${s.reused} from existing`);
                 if (s.removals) parts.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
                 footer.textContent = parts.length ? `On publish: ${parts.join(" · ")}` : "Nothing to publish yet";
             }
@@ -1157,6 +1160,7 @@
             const lines = [];
             if (s.add) lines.push(`${s.add} new assembl${s.add === 1 ? "y" : "ies"}`);
             if (s.updates) lines.push(`${s.updates} update${s.updates === 1 ? "" : "s"} to existing assemblies`);
+            if (s.reused) lines.push(`${s.reused} existing assembl${s.reused === 1 ? "y" : "ies"} added to this PO`);
             if (s.removals) lines.push(`${s.removals} removal${s.removals === 1 ? "" : "s"}`);
             $("confirm-list").replaceChildren(...lines.map((t) => h("li", {}, t)));
             $("confirm").classList.add("show");
@@ -1191,6 +1195,7 @@
                 if (body.childParts) parts.push(`${body.childParts} child part${body.childParts === 1 ? "" : "s"} added`);
                 if (body.quantityUpdates) parts.push(`${body.quantityUpdates} quantity update${body.quantityUpdates === 1 ? "" : "s"}`);
                 if (body.detailUpdates) parts.push(`${body.detailUpdates} status/date update${body.detailUpdates === 1 ? "" : "s"}`);
+                if (body.existingAdded) parts.push(`${body.existingAdded} existing assembl${body.existingAdded === 1 ? "y" : "ies"} added`);
                 if (body.removals) parts.push(`${body.removals} removed`);
                 if (body.projectLeadEmails) parts.push(`${body.projectLeadEmails} project lead${body.projectLeadEmails === 1 ? "" : "s"} emailed`);
                 await load();

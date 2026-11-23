@@ -412,8 +412,13 @@ def submitted_email(po, submitted_by_name, units):
             projects.append(unit["project"])
     names = ", ".join(projects)
     verb = "is" if len(projects) == 1 else "are"
-    # PO line items published: one per standalone assembly, one per child added to a group
-    line_items = sum(1 for u in units if u["kind"] == "standalone") + sum(u.get("childParts", 0) for u in units)
+    # PO line items published: one per standalone assembly, one per child added to a group, one per
+    # existing assembly added to (or changed on) this PO
+    line_items = (
+        sum(1 for u in units if u["kind"] == "standalone")
+        + sum(u.get("childParts", 0) for u in units)
+        + sum(1 for u in units if u["kind"] == "edit" and u.get("summary"))
+    )
     subject = f"Published to Mfg: {names} ({line_items} line item{'' if line_items == 1 else 's'})"
     body = (
         "Hi team,\n\n"
@@ -752,7 +757,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
     the project. `existing` (load_existing) only matters for groups: a group whose name matches an
     existing group assembly in its project adds its members to that assembly. `changes` are the
     page's edits to existing assemblies: [{"key", "quantity"?, "partName"?, "remove"?,
-    "currentStatus"?, "mfgStartDate"?, "dispatchDate"?}]. `poc` (the publisher's email) becomes
+    "currentStatus"?, "mfgStartDate"?, "dispatchDate"?, "inPo"?}]; "inPo" (added to this PO with +)
+    makes it part of the publish even with nothing changed. `poc` (the publisher's email) becomes
     the Internal POC of every assembly created. `leads` (parse_project_leads) sets the Project
     lead of every assembly created or updated, by project, and `shipment_mode` (the PO's) their
     Shipment mode.
@@ -856,7 +862,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
             if quantity is None or quantity <= 0:
                 errors.append({"rowId": item["key"], "message": "Quantity must be a number above 0"})
                 continue
-        edits.append((item, quantity, change.get("partName"), bool(change.get("remove")), details))
+        edits.append((item, quantity, change.get("partName"), bool(change.get("remove")), details, bool(change.get("inPo"))))
 
     if errors:
         return [], errors
@@ -910,9 +916,10 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
 
     units = []
 
-    for item, quantity, part_name, remove, details in edits:
+    for item, quantity, part_name, remove, details, in_po in edits:
         mutations = existing_mutations(item, quantity=quantity, part_name=part_name, remove=remove, details=details)
-        if mutations and not remove:
+        changed = bool(mutations)
+        if not remove and (changed or in_po):
             # The assembly (or a child's group) is part of this publish, so it gets the project's lead
             # and the PO's shipment mode
             if item["kind"] == "child":
@@ -927,6 +934,7 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 "label": item["partNumber"],
                 "rowIds": [],
                 "removal": remove,
+                "unchanged": not remove and not changed,  # added to this PO with + and not edited
                 "quantityUpdate": not remove and quantity is not None and quantity != item["quantity"],
                 "detailsUpdate": not remove and any(details.get(k) and details[k] != item.get(k) for k in DETAIL_COLUMNS),
                 "mutations": mutations,
@@ -934,7 +942,8 @@ def build_submit_plan(items, projects, existing=EMPTY_EXISTING, changes=(), poc=
                 "summary": None if remove else {
                     "partNumber": item["partNumber"],
                     "partName": _text(part_name) or item["partName"],
-                    "note": f"qty {format_quantity(quantity if quantity is not None else item['quantity'])}, updated",
+                    "note": f"qty {format_quantity(quantity if quantity is not None else item['quantity'])}"
+                    + (", updated" if changed else ""),
                 },
             })
 
@@ -1554,6 +1563,7 @@ async def submit_po_assemblies(
         "quantityUpdates": sum(1 for u in done if u.get("quantityUpdate")),
         "detailUpdates": sum(1 for u in done if u.get("detailsUpdate")),
         "removals": sum(1 for u in done if u.get("removal")),
+        "existingAdded": sum(1 for u in done if u.get("unchanged")),
         "drawingsCreated": sum(1 for j in jobs if not j["existingRowId"]),
         "drawingsUpdated": sum(1 for j in jobs if j["existingRowId"]),
         "processRows": process_rows,

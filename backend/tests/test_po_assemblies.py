@@ -191,7 +191,7 @@ def test_submit_creates_assemblies_and_child_parts():
     assert res.status_code == 200, res.text
     assert res.json() == {
         "standaloneAssemblies": 1, "groupAssemblies": 1, "childParts": 2,
-        "quantityUpdates": 0, "detailUpdates": 0, "removals": 0,
+        "quantityUpdates": 0, "detailUpdates": 0, "removals": 0, "existingAdded": 0,
         "drawingsCreated": 4, "drawingsUpdated": 0, "processRows": 6, "emailSent": False, "projectLeadEmails": 0,
         "warnings": ["No project lead on the PO for Proj A, so none was set"],
     }
@@ -730,3 +730,24 @@ def test_projects_without_a_lead_are_reported():
     assert res.json()["warnings"] == ["No project lead on the PO for Proj A, so none was set"]
     assert pa.parse_project_leads("not json") == {}
     assert pa.parse_project_leads({"X 1": {"admin": "A"}}) == {}
+
+
+def test_existing_assembly_added_to_the_po_unchanged_gets_lead_and_email():
+    glide = with_existing(FakeGlide([]))
+    glide.tables[pa.PO_TABLE][0][pa.PO_PROJECT_LEADS] = LEADS
+    glide.tables[pa.PO_TABLE][0][pa.PO_SHIPMENT_MODE] = "Sea"
+    mailer = FakeMailer(enabled=True)
+    res = client_for(glide, mailer=mailer).post(f"/po-assemblies/{PO}/submit", json={"user": "dev@x.com", "existingChanges": [
+        {"key": "a:asm-e1", "inPo": True},
+        {"key": "c:cp-k1", "inPo": True},
+    ]})
+    assert res.status_code == 200, res.text
+    assert res.json()["projectLeadEmails"] == 1 and res.json()["existingAdded"] == 2
+    assert mailer.sent[0][2] == "Published to Mfg: Proj A (2 line items)"
+    asm = {a["$rowID"]: a for a in glide.tables[pa.ASSEMBLIES_TABLE]}
+    for row_id in ("asm-e1", "asm-kit"):  # the child's group gets them too
+        assert asm[row_id][pa.ASM["projectLead"]] == "ayush@x.com"
+        assert asm[row_id][pa.ASM["shipmentMode"]] == "Sea"
+    assert asm["asm-e1"][pa.ASM["quantity"]] == 5  # nothing else changed
+    to, cc, subject, body = mailer.sent[-1]
+    assert to == ["ayush@x.com"] and "- E-1 – Existing one (qty 5)\n" in body and "- K-1 – Kit part (qty 3)" in body

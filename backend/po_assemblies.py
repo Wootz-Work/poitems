@@ -1213,6 +1213,7 @@ async def get_po_assemblies(po_row_id: str, glide: GlideClient = Depends(get_gli
             "rowId": po_row_id,
             "poNumber": _text(po.get(PO_NUMBER)),
             "customer": _text(po.get(PO_CUSTOMER)),
+            "accepted": bool(po.get(PO_ACCEPTED)),
             "attachmentIds": parse_attachment_ids(po.get(PO_ATTACHMENT_IDS)),
             "emailBody": _text(po.get(PO_BODY)),
         },

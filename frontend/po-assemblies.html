@@ -35,6 +35,7 @@
         }
 
         * { box-sizing: border-box; }
+        [hidden] { display: none !important; }
 
         html, body { height: 100%; }
 
@@ -250,6 +251,19 @@
         .add-row-line button:hover { color: var(--text); background: var(--hover); }
         .footer { padding: 14px 16px; border-top: 1px solid var(--line-strong); font-size: 13px; color: var(--muted); }
         .empty-note { padding: 18px 16px; color: var(--muted); font-size: 13px; border-bottom: 1px solid var(--line); }
+        /* Shown in place of the Publish button once everything on the PO is published */
+        .published-pill {
+            height: 40px; padding: 0 14px; display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; font-weight: 600;
+            border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent); background: color-mix(in srgb, var(--ok) 9%, transparent); color: var(--ok);
+        }
+        .done-note { padding: 36px 16px; text-align: center; border-bottom: 1px solid var(--line); }
+        .done-note .tick {
+            width: 40px; height: 40px; margin: 0 auto 12px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+            background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--ok);
+        }
+        .done-note h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+        .done-note p { margin: 0; color: var(--muted); font-size: 13px; }
+        .done-note p + p { margin-top: 10px; color: var(--faint); font-size: 12px; }
 
         /* ---------- Menus, dialogs, toasts ---------- */
         .menu {
@@ -305,6 +319,7 @@
             <span class="status" id="status"><span class="dot"></span><span id="status-text">Loading…</span></span>
             <button class="btn-tertiary" id="save" disabled>Save changes</button>
             <button class="btn-primary" id="publish" disabled>Publish to manufacturing</button>
+            <span class="published-pill" id="published" hidden></span>
         </div>
     </header>
 
@@ -369,6 +384,8 @@
         }
         // Last values set in the dates bar, used for rows added afterwards
         const defaultDates = { mfgStartDate: tomorrow(), dispatchDate: "" };
+        let published = false;     // the PO was published before and nothing new is waiting
+        let submittedCount = 0;    // its line items already in manufacturing
         let existing = [];         // assemblies already in the PO's projects
         let existingGroups = [];   // their group assemblies (a child's status and dates are its group's)
         let existingEdits = {};    // key -> { quantity?, partName?, remove? }, kept in the browser until publish
@@ -668,6 +685,13 @@
             const missing = $("missing");
             missing.hidden = !s.missing;
             missing.textContent = `${s.missing} required field${s.missing === 1 ? "" : "s"} missing`;
+            // Published, with nothing new added since: say so rather than show a disabled button
+            const done = published && !busy && s.work === 0;
+            $("publish").hidden = done;
+            $("save").hidden = done;
+            $("status").hidden = done;
+            $("published").hidden = !done;
+            if (done) $("published").replaceChildren(icon("check", 16), "Published to manufacturing");
             $("publish").disabled = busy || s.missing > 0 || s.work === 0;
             $("save").disabled = busy;
             const footer = $("footer");
@@ -782,6 +806,13 @@
                 dateField("dispatchDate", "Dispatch date"));
             const added = existing.filter(inPo);
             const body = list.length || added.length ? [...list.map(renderNewRow), ...added.map(renderInPoRow)]
+                : published ? [h("div", { class: "done-note" },
+                    h("div", { class: "tick" }, icon("check", 20)),
+                    h("h3", {}, "Published to manufacturing"),
+                    h("p", {}, submittedCount
+                        ? `All ${submittedCount} line item${submittedCount === 1 ? " on this PO is" : "s on this PO are"} in manufacturing. Nothing to do here.`
+                        : "This PO is in manufacturing. Nothing to do here."),
+                    h("p", {}, "To publish more, use Add row, or + on an assembly below."))]
                 : [h("div", { class: "empty-note" }, projects.length ? "No items. Use Add row to add one." : "This PO has no projects yet, so nothing can be published.")];
             return {
                 head,
@@ -1546,7 +1577,9 @@
                 const values = new Set(rows.map((r) => r[field] || ""));
                 defaultDates[field] = values.size === 1 ? [...values][0] : (field === "mfgStartDate" ? tomorrow() : "");
             }
-            if (!rows.length && !existing.length && projects.length) rows.push(newRecord());
+            submittedCount = body.submittedCount || 0;
+            published = submittedCount > 0 || !!body.po.accepted;
+            if (!rows.length && !existing.length && projects.length && !published) rows.push(newRecord());
 
             if (!document.querySelector("#doc-tabs .tab")) renderDocs(body.po);
             $("loading").hidden = true;
